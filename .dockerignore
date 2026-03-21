@@ -1,0 +1,12 @@
+.env
+.git
+.claude
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+data/cache/
+data/predictions/
+data/logs/
+models/saved/
+.DS_Store
