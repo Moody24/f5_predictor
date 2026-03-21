@@ -481,6 +481,10 @@ class FeatureEngineer:
         )
         home_lookup = home_lookup[home_lookup["team_id"] == home_lookup["home_team_id"]]
 
+        # Deduplicate before indexing to prevent cartesian product on merge
+        away_lookup = away_lookup.drop_duplicates(subset="game_pk")
+        home_lookup = home_lookup.drop_duplicates(subset="game_pk")
+
         for window in window_sizes:
             # Away team rolling features
             away_map = away_lookup.set_index("game_pk")[[f"roll{window}_scored", f"roll{window}_allowed"]]

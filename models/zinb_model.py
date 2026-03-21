@@ -103,13 +103,13 @@ class ZINBModel:
         if inflation_features:
             X_inflate = sm.add_constant(X[inflation_features].astype(float))
         else:
-            X_inflate = "logit"  # all features used for inflation too
+            X_inflate = None  # statsmodels uses intercept-only inflation by default
 
         try:
             model = ZeroInflatedNegativeBinomialP(
                 endog=y.astype(int),
                 exog=X_const,
-                exog_infl=X_inflate if isinstance(X_inflate, str) else X_inflate,
+                exog_infl=X_inflate,
                 inflation="logit",
             )
             result = model.fit(

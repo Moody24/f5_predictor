@@ -480,7 +480,7 @@ def main():
     # ── Fetch ──────────────────────────────────────────────────────────
     p_fetch = subparsers.add_parser("fetch", help="Fetch historical data")
     p_fetch.add_argument("--start-season", type=int, default=2021)
-    p_fetch.add_argument("--end-season", type=int, default=2024)
+    p_fetch.add_argument("--end-season", type=int, default=2025)
     p_fetch.add_argument("--include-statcast", action="store_true")
     p_fetch.add_argument("--include-lineups", action="store_true",
                          help="Fetch per-game lineups (slow, ~175k lookups)")
@@ -503,7 +503,7 @@ def main():
     # ── Pipeline ───────────────────────────────────────────────────────
     p_pipeline = subparsers.add_parser("pipeline", help="Full pipeline")
     p_pipeline.add_argument("--start-season", type=int, default=2021)
-    p_pipeline.add_argument("--end-season", type=int, default=2024)
+    p_pipeline.add_argument("--end-season", type=int, default=2025)
     p_pipeline.add_argument("--include-statcast", action="store_true")
     p_pipeline.add_argument("--include-lineups", action="store_true")
     p_pipeline.add_argument("--max-pitchers", type=int, default=100)
