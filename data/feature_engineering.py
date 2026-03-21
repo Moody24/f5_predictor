@@ -363,57 +363,52 @@ class FeatureEngineer:
     def add_travel_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Add travel distance, rest days, and schedule density per team.
-        Uses venue coordinates to compute great-circle distance.
-        Vectorized implementation for performance.
+        Uses numpy arrays for output to avoid df.at[] overhead and memory blowup.
         """
         from data.fetchers.weather import VENUE_COORDS
 
-        df = df.sort_values("date").copy()
-        df["_date_dt"] = pd.to_datetime(df["date"])
+        df = df.sort_values("date").reset_index(drop=True).copy()
+        dates = pd.to_datetime(df["date"])
+        n = len(df)
 
         for side, tid_col in [("away", "away_team_id"), ("home", "home_team_id")]:
-            # Build per-team log
-            tdf = df[["game_pk", "_date_dt", "venue_name", tid_col]].copy()
-            tdf = tdf.rename(columns={tid_col: "team_id"})
-            tdf = tdf.sort_values(["team_id", "_date_dt"]).reset_index(drop=True)
+            rest_days = np.full(n, 3.0)
+            is_back_to_back = np.zeros(n, dtype=int)
+            travel_distance = np.zeros(n)
+            games_7d = np.full(n, 3.0)
 
-            # Previous game date and venue via shift
-            tdf["prev_date"] = tdf.groupby("team_id")["_date_dt"].shift(1)
-            tdf["prev_venue"] = tdf.groupby("team_id")["venue_name"].shift(1)
+            team_last = {}   # team_id -> (date, venue)
+            team_dates = {}  # team_id -> [dates]
 
-            # Rest days and back-to-back
-            tdf["rest_days"] = (tdf["_date_dt"] - tdf["prev_date"]).dt.days.fillna(3.0)
-            tdf["is_back_to_back"] = (tdf["rest_days"] <= 1).astype(int)
+            for i in range(n):
+                tid = df.at[i, tid_col]
+                if pd.isna(tid):
+                    continue
+                tid = int(tid)
+                gdate = dates.iloc[i]
+                venue = df.at[i, "venue_name"]
 
-            # Travel distance via vectorized map
-            def _dist(row):
-                p = VENUE_COORDS.get(row["prev_venue"])
-                c = VENUE_COORDS.get(row["venue_name"])
-                if p and c and pd.notna(row["prev_venue"]):
-                    return round(self._haversine(p[0], p[1], c[0], c[1]), 0)
-                return 0.0
-            tdf["travel_distance_miles"] = tdf.apply(_dist, axis=1)
+                if tid in team_last:
+                    last_date, last_venue = team_last[tid]
+                    rest = (gdate - last_date).days
+                    rest_days[i] = rest
+                    is_back_to_back[i] = 1 if rest <= 1 else 0
+                    p = VENUE_COORDS.get(last_venue)
+                    c = VENUE_COORDS.get(venue)
+                    if p and c:
+                        travel_distance[i] = round(self._haversine(p[0], p[1], c[0], c[1]), 0)
 
-            # Games in last 7 days via time-based rolling
-            tdf = tdf.set_index("_date_dt").sort_index()
-            tdf["games_in_last_7d"] = (
-                tdf.groupby("team_id")["game_pk"]
-                .transform(lambda x: x.rolling("7D", closed="left").count())
-                .fillna(3.0)
-            )
-            tdf = tdf.reset_index()
+                if tid not in team_dates:
+                    team_dates[tid] = []
+                games_7d[i] = sum(1 for d in team_dates[tid] if (gdate - d).days <= 7)
+                team_dates[tid].append(gdate)
+                team_last[tid] = (gdate, venue)
 
-            # Merge back onto main df
-            merge_cols = ["game_pk", "rest_days", "is_back_to_back",
-                          "travel_distance_miles", "games_in_last_7d"]
-            merged = df[["game_pk"]].merge(tdf[merge_cols], on="game_pk", how="left")
+            df[f"{side}_rest_days"] = rest_days
+            df[f"{side}_is_back_to_back"] = is_back_to_back
+            df[f"{side}_travel_distance_miles"] = travel_distance
+            df[f"{side}_games_in_last_7d"] = games_7d
 
-            df[f"{side}_rest_days"] = merged["rest_days"].values
-            df[f"{side}_is_back_to_back"] = merged["is_back_to_back"].values
-            df[f"{side}_travel_distance_miles"] = merged["travel_distance_miles"].values
-            df[f"{side}_games_in_last_7d"] = merged["games_in_last_7d"].values
-
-        df = df.drop(columns=["_date_dt"])
         return df
 
     @staticmethod
