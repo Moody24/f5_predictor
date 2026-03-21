@@ -8,7 +8,7 @@ pandas>=2.2.0
 
 # Data fetching
 requests>=2.31.0
-pybaseball>=2.3.0
+pybaseball>=2.2.7
 
 # Evaluation & visualization
 matplotlib>=3.8.0
