@@ -246,7 +246,7 @@ class MLBStatsFetcher:
     ) -> pd.DataFrame:
         """Fetch multiple seasons and concatenate."""
         if seasons is None:
-            seasons = [2022, 2023, 2024]
+            seasons = [2021, 2022, 2023, 2024]
 
         cache_path = self.cache_dir / f"games_{'_'.join(map(str, seasons))}.parquet"
         if cache_path.exists():

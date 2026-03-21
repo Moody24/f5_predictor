@@ -122,34 +122,35 @@ class F5Backtester:
 
         return self._compile_results()
 
+    # Historical F5 home-win rate used as naive market baseline
+    BASELINE_HOME_WIN_RATE = 0.525
+
     def _simulate_bet(self, game: pd.Series, prediction: dict):
         """
-        Simulate a bet on a single game based on model edge.
-        Uses simplified market odds (no real historical odds in backtest).
+        Simulate bets on a single game based on model edge.
+        Uses historical F5 home-win rate as market baseline for moneyline,
+        and a naive 50/50 for over/under (no line advantage assumed).
         """
         ml = prediction["moneyline"]
         total = prediction["total"]
 
         # ── Moneyline Bet ──────────────────────────────────────────────
-        # Assume market is ~50/50 for simplification (edge comes from model)
-        market_home_implied = 0.50  # simplified
+        market_home_implied = self.BASELINE_HOME_WIN_RATE
         home_edge = (ml["home_prob"] - market_home_implied) * 100
 
         if abs(home_edge) >= self.min_edge:
             bet_side = "Home" if home_edge > 0 else "Away"
             model_prob = ml["home_prob"] if home_edge > 0 else ml["away_prob"]
+            market_prob = market_home_implied if home_edge > 0 else (1 - market_home_implied)
 
-            # Kelly sizing
-            kelly = self._kelly(model_prob, market_home_implied if home_edge > 0 else 1 - market_home_implied)
+            kelly = self._kelly(model_prob, market_prob)
             bet_size = self.bankroll * kelly * self.kelly_fraction
-            bet_size = min(bet_size, self.bankroll * 0.05)  # max 5% bankroll
+            bet_size = min(bet_size, self.bankroll * 0.05)
 
-            # Determine outcome
             actual_home_win = game.get("home_f5_win", 0)
             won = (bet_side == "Home" and actual_home_win == 1) or \
                   (bet_side == "Away" and actual_home_win == 0)
 
-            # Standard -110 vig: win pays +100, lose pays -110
             payout = bet_size * 0.909 if won else -bet_size
             self.bankroll += payout
 
@@ -165,6 +166,47 @@ class F5Backtester:
                 "payout": round(payout, 2),
                 "bankroll_after": round(self.bankroll, 2),
             })
+
+        # ── Over/Under Bet ──────────────────────────────────────────────
+        if "over_under_probs" in total:
+            actual_total = game.get("total_f5_runs")
+            predicted_total = total.get("predicted", 4.5)
+            # Use predicted total rounded to nearest 0.5 as the "line"
+            line = round(predicted_total * 2) / 2
+            ou_probs = total["over_under_probs"]
+            if line in ou_probs and actual_total is not None:
+                over_prob = ou_probs[line]["over"] / 100
+                under_prob = ou_probs[line]["under"] / 100
+                # Baseline: 50/50 on any given line
+                over_edge = (over_prob - 0.50) * 100
+                if abs(over_edge) >= self.min_edge:
+                    bet_side = "Over" if over_edge > 0 else "Under"
+                    model_prob = over_prob if over_edge > 0 else under_prob
+                    kelly = self._kelly(model_prob, 0.50)
+                    bet_size = self.bankroll * kelly * self.kelly_fraction
+                    bet_size = min(bet_size, self.bankroll * 0.05)
+
+                    won = (bet_side == "Over" and actual_total > line) or \
+                          (bet_side == "Under" and actual_total < line)
+                    # Push (exact line) = no action
+                    if actual_total == line:
+                        return
+
+                    payout = bet_size * 0.909 if won else -bet_size
+                    self.bankroll += payout
+
+                    self.bet_log.append({
+                        "date": game.get("date"),
+                        "game_pk": game.get("game_pk"),
+                        "market": f"F5 O/U {line}",
+                        "side": bet_side,
+                        "model_prob": round(model_prob, 3),
+                        "edge_pct": round(abs(over_edge), 1),
+                        "bet_size": round(bet_size, 2),
+                        "won": won,
+                        "payout": round(payout, 2),
+                        "bankroll_after": round(self.bankroll, 2),
+                    })
 
     @staticmethod
     def _kelly(model_prob: float, market_implied: float) -> float:

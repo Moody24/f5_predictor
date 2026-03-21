@@ -168,87 +168,39 @@ class ZINBModel:
         self, model, X: pd.DataFrame, max_runs: int
     ) -> np.ndarray:
         """
-        Get probability mass function from fitted ZINB.
+        Get probability mass function from fitted ZINB or NB model.
 
-        ZINB PMF:
-            P(Y=0) = π + (1-π) * NB(0)    (zero-inflated)
-            P(Y=k) = (1-π) * NB(k)          for k >= 1
-
-        Where:
-            π = zero-inflation probability (from logit model)
-            NB(k) = negative binomial PMF
+        For ZINB: uses predict(which="prob") to get P(Y=k) for each k.
+        For NB fallback: computes PMF from predicted mean and dispersion.
         """
         X_const = sm.add_constant(X.astype(float))
 
-        if hasattr(model, "predict"):
-            # Get predicted mean (lambda) from the count model
-            mu = model.predict(X_const, which="mean").values[0]
-
-            # Get zero-inflation probability
-            if hasattr(model, "predict_prob"):
-                # Use built-in probability prediction
-                probs = np.array([
-                    model.predict(X_const, which="prob", y_values=k).values[0]
-                    for k in range(max_runs + 1)
-                ])
-                # Normalize to sum to 1
-                probs = probs / probs.sum()
-                return probs
-
-        # Manual ZINB PMF calculation as fallback
-        return self._manual_zinb_pmf(model, X_const, max_runs)
-
-    def _manual_zinb_pmf(
-        self, model, X_const: pd.DataFrame, max_runs: int
-    ) -> np.ndarray:
-        """
-        Manually compute ZINB PMF from model parameters.
-
-        NB parameterization: 
-            mu = exp(X @ beta)  [mean]
-            alpha = dispersion parameter
-            p = alpha / (alpha + mu)  [scipy parameterization]
-            r = alpha  [number of successes]
-        """
         try:
-            # Extract parameters
-            params = model.params
-            mu = np.exp(X_const.values @ params[:X_const.shape[1]])
+            # Try built-in probability prediction (works for both ZINB and NB)
+            probs = np.array([
+                model.predict(X_const, which="prob", y_values=k).values[0]
+                for k in range(max_runs + 1)
+            ])
+            probs = np.maximum(probs, 0)  # clamp negatives
+            total = probs.sum()
+            if total > 0:
+                probs = probs / total
+                return probs
+        except Exception:
+            pass
 
-            # Dispersion parameter (alpha)
-            alpha = model.params[-1] if hasattr(model, "lnalpha") else 1.0
-            if hasattr(model, "lnalpha"):
-                alpha = np.exp(model.lnalpha)
-
-            # Zero inflation probability
-            if hasattr(model, "params_inflate"):
-                inflate_params = model.params_inflate
-                pi = 1 / (1 + np.exp(-inflate_params[0]))  # logistic
-            else:
-                pi = 0.0
-
-            # NB parameters for scipy
-            r = 1 / max(alpha, 1e-10)  # shape parameter
-            p = r / (r + mu[0])        # success probability
-
-            # PMF
-            probs = np.zeros(max_runs + 1)
-            for k in range(max_runs + 1):
-                nb_pmf = nbinom.pmf(k, r, p)
-                if k == 0:
-                    probs[k] = pi + (1 - pi) * nb_pmf
-                else:
-                    probs[k] = (1 - pi) * nb_pmf
-
-            # Normalize
+        # Fallback: compute PMF from predicted mean using NB distribution
+        try:
+            mu = float(model.predict(X_const, which="mean").values[0])
+            alpha = np.exp(model.lnalpha) if hasattr(model, "lnalpha") else 1.0
+            r = 1 / max(alpha, 1e-10)
+            p = r / (r + mu)
+            probs = nbinom.pmf(np.arange(max_runs + 1), r, p)
             probs = probs / probs.sum()
             return probs
-
         except Exception as e:
-            logger.warning(f"Manual PMF failed: {e}. Using simple Poisson approx.")
-            from scipy.stats import poisson
-            mu_val = 2.5  # league average F5 runs
-            return poisson.pmf(np.arange(max_runs + 1), mu_val)
+            logger.error(f"PMF computation failed: {e}")
+            raise
 
     # ── Monte Carlo Simulation ─────────────────────────────────────────
 
@@ -367,9 +319,10 @@ class ZINBModel:
 
     # ── Persistence ────────────────────────────────────────────────────
 
-    def save(self, name: str = "zinb_f5"):
+    def save(self, name: str = "zinb_f5", save_dir=None):
         """Save fitted models to disk."""
-        path = MODEL_DIR / f"{name}.joblib"
+        save_dir = save_dir or MODEL_DIR
+        path = save_dir / f"{name}.joblib"
         joblib.dump(
             {
                 "away_model": self.away_model,
@@ -381,9 +334,10 @@ class ZINBModel:
         )
         logger.info(f"ZINB model saved to {path}")
 
-    def load(self, name: str = "zinb_f5"):
+    def load(self, name: str = "zinb_f5", load_dir=None):
         """Load fitted models from disk."""
-        path = MODEL_DIR / f"{name}.joblib"
+        load_dir = load_dir or MODEL_DIR
+        path = load_dir / f"{name}.joblib"
         data = joblib.load(path)
         self.away_model = data["away_model"]
         self.home_model = data["home_model"]

@@ -21,7 +21,10 @@ import json
 from models.zinb_model import ZINBModel
 from models.xgboost_model import XGBoostF5Model
 from data.fetchers.odds_api import OddsApiFetcher
-from config.settings import N_SIMULATIONS, MIN_EDGE_PCT, MIN_KELLY_FRACTION
+from config.settings import (
+    N_SIMULATIONS, MIN_EDGE_PCT, MIN_KELLY_FRACTION,
+    create_model_version_dir, get_latest_model_dir,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -427,31 +430,40 @@ class CombinedF5Predictor:
 
     # ── Persistence ────────────────────────────────────────────────────
 
-    def save(self, name: str = "combined_f5"):
-        """Save both models and ensemble config."""
-        self.zinb.save(f"{name}_zinb")
-        self.xgb.save(f"{name}_xgb")
-        import json
+    def save(self, name: str = "combined_f5", version_dir=None):
+        """Save both models and ensemble config to a versioned directory."""
+        if version_dir is None:
+            version_dir = create_model_version_dir()
+
+        self.zinb.save(f"{name}_zinb", save_dir=version_dir)
+        self.xgb.save(f"{name}_xgb", save_dir=version_dir)
+
         config = {
             "zinb_weight": self.zinb_weight,
             "xgb_weight": self.xgb_weight,
             "away_feature_cols": self._away_feature_cols,
             "home_feature_cols": self._home_feature_cols,
         }
-        config_path = MODEL_DIR / f"{name}_config.json"
+        config_path = version_dir / f"{name}_config.json"
         with open(config_path, "w") as f:
             json.dump(config, f, indent=2)
-        logger.info(f"Combined model saved.")
 
-    def load(self, name: str = "combined_f5"):
-        """Load both models and ensemble config."""
-        self.zinb.load(f"{name}_zinb")
-        self.xgb.load(f"{name}_xgb")
-        config_path = MODEL_DIR / f"{name}_config.json"
+        logger.info(f"Combined model saved to {version_dir}")
+        return version_dir
+
+    def load(self, name: str = "combined_f5", version_dir=None):
+        """Load both models and ensemble config from a versioned directory."""
+        if version_dir is None:
+            version_dir = get_latest_model_dir()
+
+        self.zinb.load(f"{name}_zinb", load_dir=version_dir)
+        self.xgb.load(f"{name}_xgb", load_dir=version_dir)
+
+        config_path = version_dir / f"{name}_config.json"
         with open(config_path) as f:
             config = json.load(f)
         self.zinb_weight = config["zinb_weight"]
         self.xgb_weight = config["xgb_weight"]
         self._away_feature_cols = config["away_feature_cols"]
         self._home_feature_cols = config["home_feature_cols"]
-        logger.info(f"Combined model loaded.")
+        logger.info(f"Combined model loaded from {version_dir}")
