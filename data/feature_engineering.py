@@ -166,18 +166,22 @@ class FeatureEngineer:
                 "home_team_id": game.get("home_team_id"),
             }
 
+            game_season = int(game["season"]) if "season" in game and pd.notna(game["season"]) else None
+
             # ── Away Side Features ─────────────────────────────────────
             away_pitcher = self._build_pitcher_features(
                 game.get("home_starter_id"),  # home starter faces away batters
                 pitcher_stats,
                 statcast_profiles,
                 prefix="away_facing_",
+                game_season=game_season,
             )
 
             away_offense = self._build_offense_features(
                 game.get("away_team_id"),
                 team_stats,
                 prefix="away_",
+                game_season=game_season,
             )
 
             # ── Home Side Features ─────────────────────────────────────
@@ -186,12 +190,14 @@ class FeatureEngineer:
                 pitcher_stats,
                 statcast_profiles,
                 prefix="home_facing_",
+                game_season=game_season,
             )
 
             home_offense = self._build_offense_features(
                 game.get("home_team_id"),
                 team_stats,
                 prefix="home_",
+                game_season=game_season,
             )
 
             # ── Context Features ───────────────────────────────────────
@@ -262,6 +268,7 @@ class FeatureEngineer:
         pitcher_stats: dict,
         statcast_profiles: dict,
         prefix: str,
+        game_season: int = None,
     ) -> dict:
         """Build features for the pitcher a team is facing."""
         features = {}
@@ -270,8 +277,13 @@ class FeatureEngineer:
             # Unknown starter — use league average defaults
             return self._default_pitcher_features(prefix)
 
-        # MLB Stats API features
-        pstats = pitcher_stats.get(pitcher_id, {})
+        # MLB Stats API features — try (pid, game_season) first (prior-season keyed dict),
+        # then fall back to plain pid key (prediction-time format).
+        pstats = (
+            pitcher_stats.get((pitcher_id, game_season))
+            if game_season is not None
+            else None
+        ) or pitcher_stats.get(pitcher_id, {})
         features[f"{prefix}starter_era_season"] = float(pstats.get("era", 4.50))
         features[f"{prefix}starter_whip_season"] = float(pstats.get("whip", 1.30))
         features[f"{prefix}starter_kbb_ratio"] = pstats.get("k_bb_ratio", 2.5)
@@ -334,10 +346,18 @@ class FeatureEngineer:
         team_id: Optional[int],
         team_stats: dict,
         prefix: str,
+        game_season: int = None,
     ) -> dict:
         """Build team batting features."""
         features = {}
-        tstats = team_stats.get(team_id, {}).get("hitting", {})
+        # Try (team_id, game_season) key first (prior-season keyed training dict),
+        # fall back to plain team_id (prediction-time format).
+        entry = (
+            team_stats.get((team_id, game_season))
+            if game_season is not None
+            else None
+        ) or team_stats.get(team_id, {})
+        tstats = entry.get("hitting", {})
 
         features[f"{prefix}team_ops"] = float(tstats.get("ops", ".720"))
         features[f"{prefix}team_runs_per_game"] = self._calc_rpg(tstats)

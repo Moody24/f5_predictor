@@ -58,37 +58,49 @@ def cmd_fetch(args):
     valid = games[games["total_f5_runs"].notna()].copy()
     logger.info(f"Games with F5 data: {len(valid)}")
 
-    # ── Pitcher Stats ──────────────────────────────────────────────────
-    pitcher_ids = set()
-    for col in ["away_starter_id", "home_starter_id"]:
-        pitcher_ids.update(valid[col].dropna().astype(int).unique())
+    # ── Pitcher Stats (prior-season to avoid temporal leakage) ─────────
+    # For a game in season S, we fetch stats from season S-1 so models
+    # never see full-season data that includes future games.
+    pitcher_season_pairs = set()
+    for _, game in valid.iterrows():
+        gs = int(game.get("season", seasons[-1]))
+        for col in ["away_starter_id", "home_starter_id"]:
+            pid = game.get(col)
+            if pd.notna(pid) and pid:
+                pitcher_season_pairs.add((int(pid), gs - 1))
 
-    logger.info(f"Fetching stats for {len(pitcher_ids)} unique pitchers...")
+    logger.info(f"Fetching stats for {len(pitcher_season_pairs)} pitcher-season pairs...")
     pitcher_stats = {}
-    for i, pid in enumerate(pitcher_ids):
+    for i, (pid, prior_season) in enumerate(sorted(pitcher_season_pairs)):
         if i % 50 == 0:
-            logger.info(f"  Pitcher {i}/{len(pitcher_ids)}...")
+            logger.info(f"  Pitcher {i}/{len(pitcher_season_pairs)}...")
         try:
-            stats = mlb.get_pitcher_f5_stats(pid, seasons[-1])
+            stats = mlb.get_pitcher_f5_stats(pid, prior_season)
             if stats:
-                pitcher_stats[pid] = stats
+                pitcher_stats[(pid, prior_season + 1)] = stats  # key by game_season
         except Exception as e:
-            logger.debug(f"  Failed for pitcher {pid}: {e}")
+            logger.debug(f"  Failed for pitcher {pid} prior_season {prior_season}: {e}")
 
     logger.info(f"Pitcher stats collected: {len(pitcher_stats)}")
 
-    # ── Team Stats ─────────────────────────────────────────────────────
-    team_ids = set()
-    for col in ["away_team_id", "home_team_id"]:
-        team_ids.update(valid[col].dropna().astype(int).unique())
+    # ── Team Stats (prior-season to avoid temporal leakage) ────────────
+    team_season_pairs = set()
+    for _, game in valid.iterrows():
+        gs = int(game.get("season", seasons[-1]))
+        for col in ["away_team_id", "home_team_id"]:
+            tid = game.get(col)
+            if pd.notna(tid) and tid:
+                team_season_pairs.add((int(tid), gs - 1))
 
-    logger.info(f"Fetching stats for {len(team_ids)} teams...")
+    logger.info(f"Fetching stats for {len(team_season_pairs)} team-season pairs...")
     team_stats = {}
-    for tid in team_ids:
+    for tid, prior_season in sorted(team_season_pairs):
         try:
-            team_stats[tid] = mlb.get_team_stats(tid, seasons[-1])
+            stats = mlb.get_team_stats(tid, prior_season)
+            if stats:
+                team_stats[(tid, prior_season + 1)] = stats  # key by game_season
         except Exception as e:
-            logger.debug(f"  Failed for team {tid}: {e}")
+            logger.debug(f"  Failed for team {tid} prior_season {prior_season}: {e}")
 
     # ── Statcast Profiles (optional) ───────────────────────────────────
     statcast_profiles = {}
