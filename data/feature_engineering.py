@@ -284,15 +284,21 @@ class FeatureEngineer:
             if game_season is not None
             else None
         ) or pitcher_stats.get(pitcher_id, {})
+
+        # Rookies, TJ returnees, and openers with no prior-season data get pstats={}.
+        # Use explicit league-average defaults so they're not misrepresented as zeros
+        # (zero ERA / zero runs would look like an elite ace to the model).
         features[f"{prefix}starter_era_season"] = float(pstats.get("era", 4.50))
         features[f"{prefix}starter_whip_season"] = float(pstats.get("whip", 1.30))
-        features[f"{prefix}starter_kbb_ratio"] = pstats.get("k_bb_ratio", 2.5)
-        features[f"{prefix}starter_avg_ip"] = pstats.get("avg_ip", 5.0)
-        features[f"{prefix}starter_pct_5ip_plus"] = pstats.get("pct_5ip_plus", 60.0)
-        features[f"{prefix}starter_avg_pitches"] = pstats.get("avg_pitches", 85.0)
-        features[f"{prefix}starter_avg_runs_per_start"] = pstats.get("avg_runs_per_start", 3.5)
-        features[f"{prefix}starter_last5_runs"] = pstats.get("last5_avg_runs")
-        features[f"{prefix}starter_last10_runs"] = pstats.get("last10_avg_runs")
+        features[f"{prefix}starter_kbb_ratio"] = float(pstats.get("k_bb_ratio", 2.5))
+        features[f"{prefix}starter_avg_ip"] = float(pstats.get("avg_ip", 5.0))
+        features[f"{prefix}starter_pct_5ip_plus"] = float(pstats.get("pct_5ip_plus", 60.0))
+        features[f"{prefix}starter_avg_pitches"] = float(pstats.get("avg_pitches", 85.0))
+        features[f"{prefix}starter_avg_runs_per_start"] = float(pstats.get("avg_runs_per_start", 3.5))
+        # last5/last10 previously returned None (no default) → became 0 after fillna.
+        # 0 runs = elite ace signal. Default to league average instead.
+        features[f"{prefix}starter_last5_runs"] = float(pstats.get("last5_avg_runs") or 3.5)
+        features[f"{prefix}starter_last10_runs"] = float(pstats.get("last10_avg_runs") or 3.5)
 
         # Statcast features
         sprofile = statcast_profiles.get(pitcher_id, {})
