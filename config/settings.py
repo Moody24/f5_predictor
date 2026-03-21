@@ -11,9 +11,10 @@ load_dotenv()
 
 # ── Paths ──────────────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).resolve().parent.parent
-DATA_DIR = BASE_DIR / "data" / "cache"
-MODEL_DIR = BASE_DIR / "data" / "models" / "saved"
-PREDICTIONS_DIR = BASE_DIR / "data" / "predictions"
+STORAGE_DIR = Path(os.getenv("STORAGE_DIR", str(BASE_DIR / "storage")))
+DATA_DIR = STORAGE_DIR / "cache"
+MODEL_DIR = STORAGE_DIR / "models" / "saved"
+PREDICTIONS_DIR = STORAGE_DIR / "predictions"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 MODEL_DIR.mkdir(parents=True, exist_ok=True)
 PREDICTIONS_DIR.mkdir(parents=True, exist_ok=True)
