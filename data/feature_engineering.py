@@ -364,63 +364,56 @@ class FeatureEngineer:
         """
         Add travel distance, rest days, and schedule density per team.
         Uses venue coordinates to compute great-circle distance.
+        Vectorized implementation for performance.
         """
         from data.fetchers.weather import VENUE_COORDS
-        import math
 
         df = df.sort_values("date").copy()
+        df["_date_dt"] = pd.to_datetime(df["date"])
 
-        # Build per-team game log with venue
         for side, tid_col in [("away", "away_team_id"), ("home", "home_team_id")]:
-            # Initialize columns
-            df[f"{side}_travel_distance_miles"] = 0.0
-            df[f"{side}_rest_days"] = 3.0
-            df[f"{side}_games_in_last_7d"] = 3.0
-            df[f"{side}_is_back_to_back"] = 0
+            # Build per-team log
+            tdf = df[["game_pk", "_date_dt", "venue_name", tid_col]].copy()
+            tdf = tdf.rename(columns={tid_col: "team_id"})
+            tdf = tdf.sort_values(["team_id", "_date_dt"]).reset_index(drop=True)
 
-        # For each team, track previous game date and venue
-        team_last_game = {}  # {team_id: {"date": ..., "venue": ...}}
-        team_game_dates = {}  # {team_id: [date1, date2, ...]}
+            # Previous game date and venue via shift
+            tdf["prev_date"] = tdf.groupby("team_id")["_date_dt"].shift(1)
+            tdf["prev_venue"] = tdf.groupby("team_id")["venue_name"].shift(1)
 
-        for idx, game in df.iterrows():
-            game_date = pd.to_datetime(game["date"])
+            # Rest days and back-to-back
+            tdf["rest_days"] = (tdf["_date_dt"] - tdf["prev_date"]).dt.days.fillna(3.0)
+            tdf["is_back_to_back"] = (tdf["rest_days"] <= 1).astype(int)
 
-            for side, tid_col in [("away", "away_team_id"), ("home", "home_team_id")]:
-                tid = game.get(tid_col)
-                if tid is None:
-                    continue
+            # Travel distance via vectorized map
+            def _dist(row):
+                p = VENUE_COORDS.get(row["prev_venue"])
+                c = VENUE_COORDS.get(row["venue_name"])
+                if p and c and pd.notna(row["prev_venue"]):
+                    return round(self._haversine(p[0], p[1], c[0], c[1]), 0)
+                return 0.0
+            tdf["travel_distance_miles"] = tdf.apply(_dist, axis=1)
 
-                venue = game.get("venue_name", "")
+            # Games in last 7 days via time-based rolling
+            tdf = tdf.set_index("_date_dt").sort_index()
+            tdf["games_in_last_7d"] = (
+                tdf.groupby("team_id")["game_pk"]
+                .transform(lambda x: x.rolling("7D", closed="left").count())
+                .fillna(3.0)
+            )
+            tdf = tdf.reset_index()
 
-                if tid in team_last_game:
-                    last = team_last_game[tid]
-                    last_date = pd.to_datetime(last["date"])
-                    rest = (game_date - last_date).days
+            # Merge back onto main df
+            merge_cols = ["game_pk", "rest_days", "is_back_to_back",
+                          "travel_distance_miles", "games_in_last_7d"]
+            merged = df[["game_pk"]].merge(tdf[merge_cols], on="game_pk", how="left")
 
-                    df.at[idx, f"{side}_rest_days"] = rest
-                    df.at[idx, f"{side}_is_back_to_back"] = 1 if rest <= 1 else 0
+            df[f"{side}_rest_days"] = merged["rest_days"].values
+            df[f"{side}_is_back_to_back"] = merged["is_back_to_back"].values
+            df[f"{side}_travel_distance_miles"] = merged["travel_distance_miles"].values
+            df[f"{side}_games_in_last_7d"] = merged["games_in_last_7d"].values
 
-                    # Travel distance
-                    prev_venue = last["venue"]
-                    prev_coords = VENUE_COORDS.get(prev_venue)
-                    curr_coords = VENUE_COORDS.get(venue)
-                    if prev_coords and curr_coords:
-                        dist = self._haversine(
-                            prev_coords[0], prev_coords[1],
-                            curr_coords[0], curr_coords[1],
-                        )
-                        df.at[idx, f"{side}_travel_distance_miles"] = round(dist, 0)
-
-                # Games in last 7 days
-                if tid not in team_game_dates:
-                    team_game_dates[tid] = []
-                team_game_dates[tid].append(game_date)
-                recent = [d for d in team_game_dates[tid]
-                          if (game_date - d).days <= 7 and d < game_date]
-                df.at[idx, f"{side}_games_in_last_7d"] = len(recent)
-
-                team_last_game[tid] = {"date": game["date"], "venue": venue}
-
+        df = df.drop(columns=["_date_dt"])
         return df
 
     @staticmethod
