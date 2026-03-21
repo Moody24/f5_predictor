@@ -3,5 +3,5 @@ builder = "dockerfile"
 dockerfilePath = "Dockerfile"
 
 [deploy]
-startCommand = "python scheduler.py"
+startCommand = "./entrypoint.sh"
 restartPolicyType = "never"

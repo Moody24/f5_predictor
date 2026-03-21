@@ -18,4 +18,7 @@ COPY . .
 # Create directories that map to the persistent volume
 RUN mkdir -p data/cache data/predictions data/logs models/saved
 
-CMD ["python", "scheduler.py"]
+COPY entrypoint.sh .
+RUN chmod +x entrypoint.sh
+
+CMD ["./entrypoint.sh"]
