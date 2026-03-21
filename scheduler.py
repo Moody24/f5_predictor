@@ -170,47 +170,100 @@ def main():
     parser.add_argument("--skip-accuracy", action="store_true")
     args = parser.parse_args()
 
+    run_start = datetime.now()
+    metrics = {}  # collects observability data for the run summary
+
     logger.info("=" * 60)
-    logger.info(f"DAILY SCHEDULER RUN — {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    logger.info(f"DAILY SCHEDULER RUN — {run_start.strftime('%Y-%m-%d %H:%M')} UTC")
     logger.info("=" * 60)
 
     # Step 1: Check yesterday's accuracy
     if not args.skip_accuracy:
         logger.info("Step 1: Checking yesterday's accuracy...")
+        t0 = datetime.now()
         mlb = MLBStatsFetcher()
         accuracy = check_yesterday_accuracy(mlb)
         if accuracy:
-            logger.info(f"Yesterday: ML {accuracy.get('ml_accuracy', '?')}% accurate")
+            metrics["yesterday_ml_accuracy"] = accuracy.get("ml_accuracy")
+            metrics["yesterday_total_error"] = accuracy.get("avg_total_error")
+            metrics["yesterday_edge_accuracy"] = accuracy.get("edge_bet_accuracy")
+            logger.info(
+                f"  ML accuracy: {accuracy.get('ml_accuracy', '?')}% | "
+                f"Avg total error: {accuracy.get('avg_total_error', '?')} runs | "
+                f"Edge accuracy: {accuracy.get('edge_bet_accuracy', 'N/A')}%"
+            )
+        else:
+            logger.info("  No predictions from yesterday to evaluate")
+        logger.info(f"  Done in {(datetime.now() - t0).seconds}s")
 
     # Step 2: Incremental fetch
     logger.info("Step 2: Fetching new game data...")
+    t0 = datetime.now()
     n_new = fetch_incremental()
+    metrics["new_games_fetched"] = n_new
+    logger.info(f"  {n_new} new games fetched in {(datetime.now() - t0).seconds}s")
 
     # Step 3: Conditional retrain
+    retrained = False
     if not args.skip_retrain:
         if should_retrain(force=args.force_retrain):
             logger.info("Step 3: Retraining model...")
+            t0 = datetime.now()
             from main import cmd_train
             import argparse as _ap
-            train_args = _ap.Namespace()
-            cmd_train(train_args)
+            cmd_train(_ap.Namespace())
+            retrained = True
+            metrics["retrain_duration_s"] = (datetime.now() - t0).seconds
+            logger.info(f"  Retrain complete in {metrics['retrain_duration_s']}s")
         else:
             logger.info("Step 3: Skipping retrain (not enough new data)")
+    metrics["retrained"] = retrained
 
     # Step 4: Predict today's games
     logger.info("Step 4: Generating predictions...")
+    t0 = datetime.now()
     run_predict()
+    metrics["predict_duration_s"] = (datetime.now() - t0).seconds
+
+    # Count today's predictions and edges
+    try:
+        from utils import predictions_path
+        import json
+        pred_path = predictions_path()
+        if pred_path.exists():
+            with open(pred_path) as f:
+                preds = json.load(f)
+            metrics["games_predicted"] = preds.get("n_games", 0)
+            metrics["edges_found"] = sum(len(g.get("edges", [])) for g in preds.get("games", []))
+            logger.info(
+                f"  {metrics['games_predicted']} games predicted, "
+                f"{metrics['edges_found']} edges found in {metrics['predict_duration_s']}s"
+            )
+    except Exception:
+        pass
 
     # Step 5: Notifications
     logger.info("Step 5: Notifications...")
     try:
         from notifications.telegram import send_daily_predictions
         send_daily_predictions()
+        metrics["notification_sent"] = True
+        logger.info("  Telegram notification sent")
     except ImportError:
         logger.info("  Notification module not installed — skipping")
+        metrics["notification_sent"] = False
 
+    # Run summary
+    total_s = (datetime.now() - run_start).seconds
+    metrics["total_duration_s"] = total_s
     logger.info("=" * 60)
-    logger.info("SCHEDULER COMPLETE")
+    logger.info(f"SCHEDULER COMPLETE in {total_s}s")
+    logger.info(f"  Games: {metrics.get('games_predicted', '?')} | "
+                f"Edges: {metrics.get('edges_found', '?')} | "
+                f"Retrained: {retrained} | "
+                f"Notification: {metrics.get('notification_sent', False)}")
+    if metrics.get("yesterday_ml_accuracy"):
+        logger.info(f"  Yesterday accuracy: {metrics['yesterday_ml_accuracy']}% ML")
     logger.info("=" * 60)
 
 
