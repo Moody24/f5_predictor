@@ -344,9 +344,10 @@ class XGBoostF5Model:
 
     # ── Persistence ────────────────────────────────────────────────────
 
-    def save(self, name: str = "xgb_f5"):
+    def save(self, name: str = "xgb_f5", save_dir=None):
         """Save all models to disk."""
-        path = MODEL_DIR / f"{name}.joblib"
+        save_dir = save_dir or MODEL_DIR
+        path = save_dir / f"{name}.joblib"
         joblib.dump(
             {
                 "ml_classifier": self.ml_classifier,
@@ -358,9 +359,10 @@ class XGBoostF5Model:
         )
         logger.info(f"XGBoost models saved to {path}")
 
-    def load(self, name: str = "xgb_f5"):
+    def load(self, name: str = "xgb_f5", load_dir=None):
         """Load all models from disk."""
-        path = MODEL_DIR / f"{name}.joblib"
+        load_dir = load_dir or MODEL_DIR
+        path = load_dir / f"{name}.joblib"
         data = joblib.load(path)
         self.ml_classifier = data["ml_classifier"]
         self.total_regressor = data["total_regressor"]

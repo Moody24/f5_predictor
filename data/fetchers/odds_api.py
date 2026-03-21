@@ -10,7 +10,7 @@ from datetime import datetime
 from typing import Optional
 import logging
 
-from config.settings import ODDS_API_KEY, ODDS_API_BASE, ODDS_SPORT, ODDS_BOOKMAKERS
+from config.settings import ODDS_API_KEY, ODDS_API_BASE, ODDS_SPORT, ODDS_BOOKMAKERS, F5_RATIO
 
 logger = logging.getLogger(__name__)
 
@@ -197,8 +197,6 @@ class OddsApiFetcher:
         Approximate F5 lines from full-game lines.
         Historical F5/FG ratio is approximately 5/9 ≈ 0.556 for totals.
         """
-        F5_RATIO = 5 / 9
-
         df = full_game_df.copy()
         if "total_line" in df.columns:
             df["f5_total_est"] = (df["total_line"] * F5_RATIO).round(1)

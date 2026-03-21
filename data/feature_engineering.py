@@ -54,13 +54,34 @@ class FeatureEngineer:
     ]
 
     CONTEXTUAL_FEATURES = [
-        "park_factor", "is_home", "rest_days",
-        "day_night", "dome",
+        "park_factor",
+    ]
+
+    WEATHER_FEATURES = [
+        "temperature_f", "wind_speed_mph", "wind_direction_deg",
+        "humidity_pct", "is_dome",
+    ]
+
+    UMPIRE_FEATURES = [
+        "ump_rpg_factor", "ump_experience",
+    ]
+
+    TRAVEL_FEATURES = [
+        "travel_distance_miles", "games_in_last_7d",
+        "rest_days", "is_back_to_back",
+    ]
+
+    BULLPEN_FEATURES = [
+        "team_bullpen_era", "bullpen_innings_last_3d", "starter_hook_rate",
+    ]
+
+    LINEUP_FEATURES = [
+        "lineup_avg_woba", "lineup_avg_ops", "lineup_total_iso", "lineup_platoon_pct",
     ]
 
     ROLLING_FEATURES = [
-        "team_f5_runs_last5", "team_f5_runs_last10",
-        "team_f5_runs_allowed_last5", "team_f5_runs_allowed_last10",
+        "team_f5_runs_last5", "team_f5_runs_last10", "team_f5_runs_last20",
+        "team_f5_allowed_last5", "team_f5_allowed_last10", "team_f5_allowed_last20",
     ]
 
     def __init__(self):
@@ -70,6 +91,11 @@ class FeatureEngineer:
             + self.HANDEDNESS_FEATURES
             + self.TEAM_OFFENSE_FEATURES
             + self.CONTEXTUAL_FEATURES
+            + self.WEATHER_FEATURES
+            + self.UMPIRE_FEATURES
+            + self.TRAVEL_FEATURES
+            + self.BULLPEN_FEATURES
+            + self.LINEUP_FEATURES
             + self.ROLLING_FEATURES
         )
 
@@ -81,6 +107,10 @@ class FeatureEngineer:
         pitcher_stats: dict,
         statcast_profiles: dict,
         team_stats: dict,
+        weather_data: pd.DataFrame = None,
+        umpire_data: dict = None,
+        bullpen_stats: dict = None,
+        lineup_features: pd.DataFrame = None,
     ) -> pd.DataFrame:
         """
         Build complete feature matrix for a set of games.
@@ -90,11 +120,24 @@ class FeatureEngineer:
             pitcher_stats: {pitcher_id: stats_dict} from MLB Stats API
             statcast_profiles: {pitcher_id: profile_dict} from Statcast
             team_stats: {team_id: stats_dict} from MLB Stats API
+            weather_data: DataFrame with game_pk + weather columns (optional)
+            umpire_data: {game_pk: {ump_rpg_factor, ump_experience}} (optional)
+            bullpen_stats: {team_id: {bullpen_era, ...}} (optional)
+            lineup_features: DataFrame with game_pk + lineup columns (optional)
 
         Returns:
             DataFrame with one row per game, features for both sides.
         """
         features = []
+
+        # Index optional DataFrames by game_pk for fast lookup
+        weather_lookup = {}
+        if weather_data is not None and not weather_data.empty:
+            weather_lookup = dict(zip(weather_data["game_pk"], weather_data.to_dict("records")))
+
+        lineup_lookup = {}
+        if lineup_features is not None and not lineup_features.empty:
+            lineup_lookup = dict(zip(lineup_features["game_pk"], lineup_features.to_dict("records")))
 
         for _, game in games_df.iterrows():
             row = {"game_pk": game["game_pk"], "date": game["date"]}
@@ -130,12 +173,48 @@ class FeatureEngineer:
             # ── Context Features ───────────────────────────────────────
             context = self._build_context_features(game)
 
+            # ── Weather Features ──────────────────────────────────────
+            gpk = game["game_pk"]
+            weather = weather_lookup.get(gpk, {})
+            weather_feats = {
+                "temperature_f": weather.get("temperature_f", 72.0),
+                "wind_speed_mph": weather.get("wind_speed_mph", 5.0),
+                "wind_direction_deg": weather.get("wind_direction_deg", 0.0),
+                "humidity_pct": weather.get("humidity_pct", 50.0),
+                "is_dome": weather.get("is_dome", 0),
+            }
+
+            # ── Umpire Features ───────────────────────────────────────
+            ump = (umpire_data or {}).get(gpk, {})
+            ump_feats = {
+                "ump_rpg_factor": ump.get("ump_rpg_factor", 1.0),
+                "ump_experience": ump.get("ump_experience", 100),
+            }
+
+            # ── Bullpen Features (per side) ───────────────────────────
+            for side, tid_col in [("away", "away_team_id"), ("home", "home_team_id")]:
+                tid = game.get(tid_col)
+                bp = (bullpen_stats or {}).get(tid, {})
+                row[f"{side}_team_bullpen_era"] = bp.get("bullpen_era", 4.50)
+                row[f"{side}_bullpen_innings_last_3d"] = bp.get("bullpen_innings_last_3d", 6.0)
+                row[f"{side}_starter_hook_rate"] = bp.get("starter_hook_rate", 20.0)
+
+            # ── Lineup Features ───────────────────────────────────────
+            lineup = lineup_lookup.get(gpk, {})
+            for side in ["away", "home"]:
+                row[f"{side}_lineup_avg_woba"] = lineup.get(f"{side}_lineup_avg_woba", 0.320)
+                row[f"{side}_lineup_avg_ops"] = lineup.get(f"{side}_lineup_avg_ops", 0.720)
+                row[f"{side}_lineup_total_iso"] = lineup.get(f"{side}_lineup_total_iso", 1.350)
+                row[f"{side}_lineup_platoon_pct"] = lineup.get(f"{side}_lineup_platoon_pct", 50.0)
+
             # ── Combine ────────────────────────────────────────────────
             row.update(away_pitcher)
             row.update(away_offense)
             row.update(home_pitcher)
             row.update(home_offense)
             row.update(context)
+            row.update(weather_feats)
+            row.update(ump_feats)
 
             # ── Targets (if available) ─────────────────────────────────
             if game.get("away_f5_runs") is not None:
@@ -274,28 +353,146 @@ class FeatureEngineer:
         """Calculate a rate stat as percentage."""
         return round(numerator / max(denominator, 1) * 100, 1)
 
+    # ── Travel / Fatigue Features ────────────────────────────────────
+
+    def add_travel_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Add travel distance, rest days, and schedule density per team.
+        Uses venue coordinates to compute great-circle distance.
+        """
+        from data.fetchers.weather import VENUE_COORDS
+        import math
+
+        df = df.sort_values("date").copy()
+
+        # Build per-team game log with venue
+        for side, tid_col in [("away", "away_team_id"), ("home", "home_team_id")]:
+            # Initialize columns
+            df[f"{side}_travel_distance_miles"] = 0.0
+            df[f"{side}_rest_days"] = 3.0
+            df[f"{side}_games_in_last_7d"] = 3.0
+            df[f"{side}_is_back_to_back"] = 0
+
+        # For each team, track previous game date and venue
+        team_last_game = {}  # {team_id: {"date": ..., "venue": ...}}
+        team_game_dates = {}  # {team_id: [date1, date2, ...]}
+
+        for idx, game in df.iterrows():
+            game_date = pd.to_datetime(game["date"])
+
+            for side, tid_col in [("away", "away_team_id"), ("home", "home_team_id")]:
+                tid = game.get(tid_col)
+                if tid is None:
+                    continue
+
+                venue = game.get("venue_name", "")
+
+                if tid in team_last_game:
+                    last = team_last_game[tid]
+                    last_date = pd.to_datetime(last["date"])
+                    rest = (game_date - last_date).days
+
+                    df.at[idx, f"{side}_rest_days"] = rest
+                    df.at[idx, f"{side}_is_back_to_back"] = 1 if rest <= 1 else 0
+
+                    # Travel distance
+                    prev_venue = last["venue"]
+                    prev_coords = VENUE_COORDS.get(prev_venue)
+                    curr_coords = VENUE_COORDS.get(venue)
+                    if prev_coords and curr_coords:
+                        dist = self._haversine(
+                            prev_coords[0], prev_coords[1],
+                            curr_coords[0], curr_coords[1],
+                        )
+                        df.at[idx, f"{side}_travel_distance_miles"] = round(dist, 0)
+
+                # Games in last 7 days
+                if tid not in team_game_dates:
+                    team_game_dates[tid] = []
+                team_game_dates[tid].append(game_date)
+                recent = [d for d in team_game_dates[tid]
+                          if (game_date - d).days <= 7 and d < game_date]
+                df.at[idx, f"{side}_games_in_last_7d"] = len(recent)
+
+                team_last_game[tid] = {"date": game["date"], "venue": venue}
+
+        return df
+
+    @staticmethod
+    def _haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+        """Great-circle distance in miles between two coordinates."""
+        import math
+        R = 3959  # Earth radius in miles
+        lat1, lon1, lat2, lon2 = map(math.radians, [lat1, lon1, lat2, lon2])
+        dlat = lat2 - lat1
+        dlon = lon2 - lon1
+        a = math.sin(dlat/2)**2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon/2)**2
+        return 2 * R * math.asin(math.sqrt(a))
+
     # ── Rolling Features ───────────────────────────────────────────────
 
     def add_rolling_features(
         self, df: pd.DataFrame, window_sizes: list = None
     ) -> pd.DataFrame:
         """
-        Add rolling averages of F5 runs scored/allowed.
-        Must be applied per-team with games sorted by date.
+        Add rolling averages of F5 runs scored/allowed per team.
+
+        Reshapes data so each team's games are tracked chronologically
+        regardless of home/away, then merges rolling stats back.
+        Uses shift(1) to avoid leaking current game into its own features.
         """
         if window_sizes is None:
             window_sizes = ROLLING_WINDOWS
 
+        if "away_f5_runs" not in df.columns or "home_f5_runs" not in df.columns:
+            logger.warning("F5 run columns missing — skipping rolling features")
+            return df
+
         df = df.sort_values("date").copy()
 
-        for side in ["away", "home"]:
-            for window in window_sizes:
-                # Runs scored
-                col = f"{side}_f5_runs"
-                if col in df.columns:
-                    df[f"{side}_f5_runs_roll{window}"] = (
-                        df[col].rolling(window, min_periods=1).mean()
-                    )
+        # Build per-team game log: each row = one team's appearance in a game
+        away_games = df[["game_pk", "date", "away_team_id", "away_f5_runs", "home_f5_runs"]].rename(
+            columns={"away_team_id": "team_id", "away_f5_runs": "runs_scored", "home_f5_runs": "runs_allowed"}
+        )
+        home_games = df[["game_pk", "date", "home_team_id", "home_f5_runs", "away_f5_runs"]].rename(
+            columns={"home_team_id": "team_id", "home_f5_runs": "runs_scored", "away_f5_runs": "runs_allowed"}
+        )
+        team_log = pd.concat([away_games, home_games], ignore_index=True)
+        team_log = team_log.sort_values(["team_id", "date"])
+
+        # Compute rolling stats per team (shifted to exclude current game)
+        for window in window_sizes:
+            team_log[f"roll{window}_scored"] = (
+                team_log.groupby("team_id")["runs_scored"]
+                .transform(lambda x: x.shift(1).rolling(window, min_periods=1).mean())
+            )
+            team_log[f"roll{window}_allowed"] = (
+                team_log.groupby("team_id")["runs_allowed"]
+                .transform(lambda x: x.shift(1).rolling(window, min_periods=1).mean())
+            )
+
+        # Split back into away/home lookups and merge onto original df
+        away_roll = team_log[team_log["game_pk"].isin(df["game_pk"])].copy()
+        away_lookup = away_roll.merge(
+            df[["game_pk", "away_team_id"]], on="game_pk"
+        )
+        away_lookup = away_lookup[away_lookup["team_id"] == away_lookup["away_team_id"]]
+
+        home_lookup = away_roll.merge(
+            df[["game_pk", "home_team_id"]], on="game_pk"
+        )
+        home_lookup = home_lookup[home_lookup["team_id"] == home_lookup["home_team_id"]]
+
+        for window in window_sizes:
+            # Away team rolling features
+            away_map = away_lookup.set_index("game_pk")[[f"roll{window}_scored", f"roll{window}_allowed"]]
+            away_map.columns = [f"away_team_f5_runs_last{window}", f"away_team_f5_allowed_last{window}"]
+            df = df.merge(away_map, left_on="game_pk", right_index=True, how="left")
+
+            # Home team rolling features
+            home_map = home_lookup.set_index("game_pk")[[f"roll{window}_scored", f"roll{window}_allowed"]]
+            home_map.columns = [f"home_team_f5_runs_last{window}", f"home_team_f5_allowed_last{window}"]
+            df = df.merge(home_map, left_on="game_pk", right_index=True, how="left")
 
         return df
 

@@ -18,10 +18,13 @@ from datetime import datetime, timedelta
 import pandas as pd
 import numpy as np
 
-from config.settings import CURRENT_SEASON, DATA_DIR, MODEL_DIR
+from config.settings import CURRENT_SEASON, DATA_DIR, MODEL_DIR, MLB_TO_ODDS_TEAM_MAP, F5_RATIO
 from data.fetchers.mlb_stats import MLBStatsFetcher
 from data.fetchers.statcast import StatcastFetcher, PYBASEBALL_AVAILABLE
 from data.fetchers.odds_api import OddsApiFetcher
+from data.fetchers.weather import WeatherFetcher
+from data.fetchers.umpire import UmpireFetcher
+from data.fetchers.lineups import LineupFetcher
 from data.feature_engineering import FeatureEngineer
 from models.zinb_model import ZINBModel
 from models.xgboost_model import XGBoostF5Model
@@ -104,12 +107,53 @@ def cmd_fetch(args):
             except Exception:
                 continue
 
+    # ── Weather Data ────────────────────────────────────────────────────
+    logger.info("Fetching weather data...")
+    weather_fetcher = WeatherFetcher()
+    weather_data = weather_fetcher.get_batch_weather(valid)
+
+    # ── Umpire Data ───────────────────────────────────────────────────
+    logger.info("Fetching umpire data...")
+    ump_fetcher = UmpireFetcher()
+    ump_assignments = ump_fetcher.build_umpire_assignments(valid)
+    ump_tendencies = ump_fetcher.build_umpire_tendencies(ump_assignments, valid)
+    umpire_data = {}
+    for _, row in ump_assignments.iterrows():
+        gpk = row.get("game_pk")
+        uid = row.get("umpire_id")
+        if uid in ump_tendencies:
+            umpire_data[gpk] = ump_tendencies[uid]
+
+    # ── Lineup Data ───────────────────────────────────────────────────
+    lineup_features = pd.DataFrame()
+    if args.include_lineups:
+        logger.info("Fetching lineup data...")
+        lineup_fetcher = LineupFetcher()
+        lineup_frames = []
+        for season in seasons:
+            lf = lineup_fetcher.build_batch_lineup_features(valid, season)
+            if not lf.empty:
+                lineup_frames.append(lf)
+        if lineup_frames:
+            lineup_features = pd.concat(lineup_frames, ignore_index=True)
+
     # ── Feature Engineering ────────────────────────────────────────────
     logger.info("Engineering features...")
     fe = FeatureEngineer()
     feature_df = fe.build_game_features(
-        valid, pitcher_stats, statcast_profiles, team_stats
+        valid, pitcher_stats, statcast_profiles, team_stats,
+        weather_data=weather_data,
+        umpire_data=umpire_data,
+        lineup_features=lineup_features,
     )
+
+    # ── Rolling Features (per-team, backward-looking) ─────────────────
+    logger.info("Adding rolling features...")
+    feature_df = fe.add_rolling_features(feature_df)
+
+    # ── Travel / Fatigue Features ─────────────────────────────────────
+    logger.info("Adding travel/fatigue features...")
+    feature_df = fe.add_travel_features(feature_df)
 
     # ── Save ───────────────────────────────────────────────────────────
     out_path = DATA_DIR / "feature_matrix.parquet"
@@ -189,9 +233,62 @@ def cmd_train(args):
     if not importance.empty:
         logger.info(f"\n{importance.to_string()}")
 
-    # ── Save ───────────────────────────────────────────────────────────
-    predictor.save("f5_combined")
-    logger.info(f"Models saved to {MODEL_DIR}")
+    # ── Save (versioned) ────────────────────────────────────────────────
+    version_dir = predictor.save("f5_combined")
+    logger.info(f"Models saved to {version_dir}")
+
+
+def _match_odds_to_game(
+    mlb_home: str, mlb_away: str, odds_df: pd.DataFrame
+) -> dict:
+    """
+    Match a game's odds from the Odds API DataFrame by team name.
+    Returns a market dict with consensus (mean) implied probabilities
+    across bookmakers, suitable for find_all_edges().
+    """
+    odds_home = MLB_TO_ODDS_TEAM_MAP.get(mlb_home, mlb_home)
+    odds_away = MLB_TO_ODDS_TEAM_MAP.get(mlb_away, mlb_away)
+
+    game_odds = odds_df[
+        (odds_df["home_team"] == odds_home) & (odds_df["away_team"] == odds_away)
+    ]
+    if game_odds.empty:
+        return {}
+
+    market = {}
+
+    # Moneyline consensus
+    ml_rows = game_odds[game_odds["market"] == "moneyline"]
+    if not ml_rows.empty and "home_implied" in ml_rows.columns:
+        market["home_ml_implied"] = ml_rows["home_implied"].mean()
+        market["away_ml_implied"] = ml_rows["away_implied"].mean()
+        if "home_ml" in ml_rows.columns:
+            market["home_ml_american"] = ml_rows["home_ml"].median()
+            market["away_ml_american"] = ml_rows["away_ml"].median()
+
+    # Totals consensus (apply F5 ratio to convert full-game to F5)
+    total_rows = game_odds[game_odds["market"] == "total"]
+    if not total_rows.empty and "total_line" in total_rows.columns:
+        full_game_line = total_rows["total_line"].median()
+        market["total_line"] = round(full_game_line * F5_RATIO * 2) / 2  # round to nearest 0.5
+        if "over_implied" in total_rows.columns:
+            market["over_implied"] = total_rows["over_implied"].mean()
+            market["under_implied"] = total_rows["under_implied"].mean()
+        if "over_price" in total_rows.columns:
+            market["over_american"] = total_rows["over_price"].median()
+            market["under_american"] = total_rows["under_price"].median()
+
+    # Spread consensus (apply F5 ratio)
+    spread_rows = game_odds[game_odds["market"] == "spread"]
+    if not spread_rows.empty and "home_spread" in spread_rows.columns:
+        full_spread = spread_rows["home_spread"].median()
+        market["home_spread"] = round(full_spread * F5_RATIO * 2) / 2
+        if "home_spread_implied" in spread_rows.columns:
+            market["home_spread_implied"] = spread_rows["home_spread_implied"].mean()
+        if "home_spread_price" in spread_rows.columns:
+            market["home_spread_american"] = spread_rows["home_spread_price"].median()
+
+    return market
 
 
 def cmd_predict(args):
@@ -261,14 +358,16 @@ def cmd_predict(args):
     )
 
     # ── Generate Predictions ───────────────────────────────────────────
+    all_predictions = []
+
     for idx, (_, game) in enumerate(upcoming.iterrows()):
         game_info = {
             "away_team": game["away_team"],
             "home_team": game["home_team"],
             "date": game["date"],
             "venue": game["venue_name"],
-            "away_starter": game["away_starter_name"],
-            "home_starter": game["home_starter_name"],
+            "away_starter": game.get("away_starter_name", "TBD"),
+            "home_starter": game.get("home_starter_name", "TBD"),
         }
 
         X_game = features.iloc[[idx]]
@@ -283,15 +382,45 @@ def cmd_predict(args):
             # Find edges vs market
             edges = []
             if not current_odds.empty:
-                market = {}  # TODO: match game to odds by team names
-                edges = predictor.find_all_edges(prediction, market)
+                market = _match_odds_to_game(
+                    game["home_team"], game["away_team"], current_odds
+                )
+                if market:
+                    edges = predictor.find_all_edges(prediction, market)
 
             card = predictor.generate_game_card(prediction, edges)
             print(card)
             print()
 
+            # Collect for JSON output
+            all_predictions.append({
+                "game_info": game_info,
+                "moneyline": prediction["moneyline"],
+                "total": {
+                    k: v for k, v in prediction["total"].items()
+                    if k != "over_under_probs"  # not JSON serializable as-is
+                },
+                "run_line": prediction["run_line"],
+                "edges": edges,
+            })
+
         except Exception as e:
             logger.warning(f"Prediction failed for {game['away_team']} @ {game['home_team']}: {e}")
+
+    # ── Save Predictions as JSON ─────────────────────────────────────
+    if all_predictions:
+        from config.settings import PREDICTIONS_DIR, get_latest_model_dir
+        import json
+        output = {
+            "date": today,
+            "model_version": str(get_latest_model_dir().name),
+            "n_games": len(all_predictions),
+            "games": all_predictions,
+        }
+        json_path = PREDICTIONS_DIR / f"{today}.json"
+        with open(json_path, "w") as f:
+            json.dump(output, f, indent=2, default=str)
+        logger.info(f"Predictions saved to {json_path}")
 
 
 def cmd_backtest(args):
@@ -350,9 +479,11 @@ def main():
 
     # ── Fetch ──────────────────────────────────────────────────────────
     p_fetch = subparsers.add_parser("fetch", help="Fetch historical data")
-    p_fetch.add_argument("--start-season", type=int, default=2022)
+    p_fetch.add_argument("--start-season", type=int, default=2021)
     p_fetch.add_argument("--end-season", type=int, default=2024)
     p_fetch.add_argument("--include-statcast", action="store_true")
+    p_fetch.add_argument("--include-lineups", action="store_true",
+                         help="Fetch per-game lineups (slow, ~175k lookups)")
     p_fetch.add_argument("--max-pitchers", type=int, default=100,
                          help="Max pitchers for Statcast (rate limited)")
 
@@ -371,9 +502,10 @@ def main():
 
     # ── Pipeline ───────────────────────────────────────────────────────
     p_pipeline = subparsers.add_parser("pipeline", help="Full pipeline")
-    p_pipeline.add_argument("--start-season", type=int, default=2022)
+    p_pipeline.add_argument("--start-season", type=int, default=2021)
     p_pipeline.add_argument("--end-season", type=int, default=2024)
     p_pipeline.add_argument("--include-statcast", action="store_true")
+    p_pipeline.add_argument("--include-lineups", action="store_true")
     p_pipeline.add_argument("--max-pitchers", type=int, default=100)
 
     args = parser.parse_args()

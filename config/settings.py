@@ -13,8 +13,37 @@ load_dotenv()
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data" / "cache"
 MODEL_DIR = BASE_DIR / "models" / "saved"
+PREDICTIONS_DIR = BASE_DIR / "data" / "predictions"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 MODEL_DIR.mkdir(parents=True, exist_ok=True)
+PREDICTIONS_DIR.mkdir(parents=True, exist_ok=True)
+MAX_MODEL_VERSIONS = 5
+
+
+def get_latest_model_dir() -> Path:
+    """Get the most recent versioned model directory."""
+    versions = sorted(MODEL_DIR.glob("20*"), reverse=True)
+    if versions:
+        return versions[0]
+    return MODEL_DIR  # fallback to flat directory for backward compat
+
+
+def create_model_version_dir() -> Path:
+    """Create a new timestamped model directory and prune old versions."""
+    from datetime import datetime as _dt
+    version_dir = MODEL_DIR / _dt.now().strftime("%Y-%m-%d_%H%M%S")
+    version_dir.mkdir(parents=True, exist_ok=True)
+    # Prune old versions
+    versions = sorted(MODEL_DIR.glob("20*"), reverse=True)
+    for old in versions[MAX_MODEL_VERSIONS:]:
+        import shutil
+        shutil.rmtree(old, ignore_errors=True)
+    return version_dir
+
+
+def list_model_versions() -> list[Path]:
+    """List all saved model versions, newest first."""
+    return sorted(MODEL_DIR.glob("20*"), reverse=True)
 
 # ── API Keys ───────────────────────────────────────────────────────────
 ODDS_API_KEY = os.getenv("ODDS_API_KEY", "")
@@ -117,3 +146,41 @@ ODDS_SPORT = "baseball_mlb"
 ODDS_REGIONS = "us"
 ODDS_MARKETS = "h2h,spreads,totals"
 ODDS_BOOKMAKERS = ["fanduel", "draftkings", "betmgm", "caesars"]
+F5_RATIO = 5 / 9  # Historical ratio of F5 runs to full-game runs
+
+# ── Team Name Mapping (Odds API → MLB Stats API) ─────────────────────
+# The Odds API and MLB Stats API use slightly different team name formats.
+ODDS_TO_MLB_TEAM_MAP = {
+    "Arizona Diamondbacks": "Arizona Diamondbacks",
+    "Atlanta Braves": "Atlanta Braves",
+    "Baltimore Orioles": "Baltimore Orioles",
+    "Boston Red Sox": "Boston Red Sox",
+    "Chicago Cubs": "Chicago Cubs",
+    "Chicago White Sox": "Chicago White Sox",
+    "Cincinnati Reds": "Cincinnati Reds",
+    "Cleveland Guardians": "Cleveland Guardians",
+    "Colorado Rockies": "Colorado Rockies",
+    "Detroit Tigers": "Detroit Tigers",
+    "Houston Astros": "Houston Astros",
+    "Kansas City Royals": "Kansas City Royals",
+    "Los Angeles Angels": "Los Angeles Angels",
+    "Los Angeles Dodgers": "Los Angeles Dodgers",
+    "Miami Marlins": "Miami Marlins",
+    "Milwaukee Brewers": "Milwaukee Brewers",
+    "Minnesota Twins": "Minnesota Twins",
+    "New York Mets": "New York Mets",
+    "New York Yankees": "New York Yankees",
+    "Oakland Athletics": "Oakland Athletics",
+    "Philadelphia Phillies": "Philadelphia Phillies",
+    "Pittsburgh Pirates": "Pittsburgh Pirates",
+    "San Diego Padres": "San Diego Padres",
+    "San Francisco Giants": "San Francisco Giants",
+    "Seattle Mariners": "Seattle Mariners",
+    "St. Louis Cardinals": "St. Louis Cardinals",
+    "Tampa Bay Rays": "Tampa Bay Rays",
+    "Texas Rangers": "Texas Rangers",
+    "Toronto Blue Jays": "Toronto Blue Jays",
+    "Washington Nationals": "Washington Nationals",
+}
+# Reverse map for MLB → Odds API lookups
+MLB_TO_ODDS_TEAM_MAP = {v: k for k, v in ODDS_TO_MLB_TEAM_MAP.items()}
