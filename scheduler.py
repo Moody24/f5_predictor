@@ -201,10 +201,10 @@ def main():
     logger.info("Step 4: Generating predictions...")
     run_predict()
 
-    # Step 5: Notifications (Phase 10 — placeholder)
+    # Step 5: Notifications
     logger.info("Step 5: Notifications...")
     try:
-        from notifications.whatsapp import send_daily_predictions
+        from notifications.telegram import send_daily_predictions
         send_daily_predictions()
     except ImportError:
         logger.info("  Notification module not installed — skipping")
