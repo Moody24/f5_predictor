@@ -72,8 +72,9 @@ Provide:
 1. Top 3 strongest plays with brief reasoning (1-2 sentences each)
 2. Games to avoid (high uncertainty)
 3. Overall market read (pitcher-heavy day? lots of value? thin slate?)
+4. Best 2-leg parlay: pick the 2 most independent, highest-confidence legs (avoid same-game parlays). Show the legs, brief reasoning, and a rough combined probability estimate.
 
-Keep it under 300 words. Be direct — this goes to a bettor's phone."""
+Keep it under 400 words. Be direct — this goes to a bettor's phone."""
 
     message = client.messages.create(
         model="claude-haiku-4-5-20251001",
@@ -127,6 +128,22 @@ def _fallback_summary(predictions_json: dict) -> str:
                 f"  {i+1}. {e['game']} — {e['market']} {e['side']} "
                 f"({e['confidence']}, +{e['edge_pct']:.1f}%)"
             )
+
+        # Suggest 2-leg parlay from top 2 edges in different games
+        parlay_legs = []
+        seen_games = set()
+        for e in all_edges:
+            if e["game"] not in seen_games:
+                parlay_legs.append(e)
+                seen_games.add(e["game"])
+            if len(parlay_legs) == 2:
+                break
+
+        if len(parlay_legs) == 2:
+            lines.append("")
+            lines.append("Suggested 2-Leg Parlay:")
+            for leg in parlay_legs:
+                lines.append(f"  - {leg['game']} — {leg['market']} {leg['side']}")
     else:
         lines.append("No actionable edges found today.")
 
