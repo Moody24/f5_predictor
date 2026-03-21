@@ -193,13 +193,14 @@ class ZINBModel:
         """
         Align X to the exact columns the model was trained on.
 
-        statsmodels stores the design matrix column names in model.model.exog_names.
-        At inference, X may have different columns than training (e.g. rolling
-        features present at train time but not at inference, or more columns due
-        to better pitcher coverage). Reindex fills missing cols with 0.
+        Uses model.model.exog_names (stored by statsmodels) to reindex X to
+        the training-time column set. Missing columns are filled with 0.
+        Does NOT call _drop_constant_cols — that must only run at training
+        time (std of a single inference row is always NaN/0, dropping everything).
         """
-        X_clean = self._drop_constant_cols(X.astype(float).fillna(0.0))
-        X_const = sm.add_constant(X_clean, has_constant="add")
+        X_float = X.astype(float).fillna(0.0)
+        # Add constant without forcing — statsmodels names it "const"
+        X_const = sm.add_constant(X_float, has_constant="add")
         trained_cols = model.model.exog_names
         return X_const.reindex(columns=trained_cols, fill_value=0.0)
 
@@ -207,36 +208,44 @@ class ZINBModel:
         self, model, X: pd.DataFrame, max_runs: int
     ) -> np.ndarray:
         """
-        Get probability mass function from fitted ZINB or NB model.
+        Get probability mass function from fitted ZINB, NB, or Poisson model.
 
-        For ZINB: uses predict(which="prob") to get P(Y=k) for each k.
-        For NB fallback: computes PMF from predicted mean and dispersion.
+        First tries the statsmodels built-in which="prob" (ZINB only).
+        Falls back to computing the PMF analytically from the predicted mean,
+        using NB for dispersion-aware models or Poisson otherwise.
         """
+        from scipy.stats import poisson as scipy_poisson
         X_aligned = self._align_to_model(model, X)
 
         try:
-            # Try built-in probability prediction (works for both ZINB and NB)
+            # which="prob" works for ZeroInflated models only
             probs = np.array([
                 model.predict(X_aligned, which="prob", y_values=k).values[0]
                 for k in range(max_runs + 1)
             ])
-            probs = np.maximum(probs, 0)  # clamp negatives
+            probs = np.maximum(probs, 0)
             total = probs.sum()
             if total > 0:
-                probs = probs / total
-                return probs
+                return probs / total
         except Exception:
             pass
 
-        # Fallback: compute PMF from predicted mean using NB distribution
+        # For NB and Poisson: model.predict(exog) returns the expected count (mu)
         try:
-            mu = float(model.predict(X_aligned, which="mean").values[0])
-            alpha = np.exp(model.lnalpha) if hasattr(model, "lnalpha") else 1.0
-            r = 1 / max(alpha, 1e-10)
-            p = r / (r + mu)
-            probs = nbinom.pmf(np.arange(max_runs + 1), r, p)
-            probs = probs / probs.sum()
-            return probs
+            mu = float(model.predict(X_aligned).values[0])
+            mu = max(mu, 0.01)
+
+            if hasattr(model, "lnalpha"):
+                # Negative Binomial: parameterize via dispersion alpha
+                alpha = np.exp(model.lnalpha)
+                r = 1.0 / max(alpha, 1e-10)
+                p = r / (r + mu)
+                probs = nbinom.pmf(np.arange(max_runs + 1), r, p)
+            else:
+                # Poisson fallback
+                probs = scipy_poisson.pmf(np.arange(max_runs + 1), mu)
+
+            return probs / probs.sum()
         except Exception as e:
             logger.error(f"PMF computation failed: {e}")
             raise

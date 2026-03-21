@@ -417,8 +417,15 @@ def cmd_predict(args):
 
         X_game = features.iloc[[idx]]
 
-        # Drop non-numeric columns for prediction
-        numeric_cols = [c for c in X_game.columns if X_game[c].dtype in [np.float64, np.int64, float, int]]
+        # Drop non-numeric and ID columns — same exclusions as training
+        _pred_exclude = {"game_pk", "date", "venue_name", "venue_id", "season",
+                         "away_team_id", "home_team_id",
+                         "away_f5_runs", "home_f5_runs", "total_f5_runs",
+                         "home_f5_win", "f5_push", "f5_diff"}
+        numeric_cols = [
+            c for c in X_game.columns
+            if c not in _pred_exclude and X_game[c].dtype in [np.float64, np.int64, float, int]
+        ]
         X_game = X_game[numeric_cols]
 
         try:
