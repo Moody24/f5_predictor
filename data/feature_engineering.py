@@ -140,7 +140,12 @@ class FeatureEngineer:
             lineup_lookup = dict(zip(lineup_features["game_pk"], lineup_features.to_dict("records")))
 
         for _, game in games_df.iterrows():
-            row = {"game_pk": game["game_pk"], "date": game["date"]}
+            row = {
+                "game_pk": game["game_pk"],
+                "date": game["date"],
+                "away_team_id": game.get("away_team_id"),
+                "home_team_id": game.get("home_team_id"),
+            }
 
             # ── Away Side Features ─────────────────────────────────────
             away_pitcher = self._build_pitcher_features(
