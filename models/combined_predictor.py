@@ -116,6 +116,7 @@ class CombinedF5Predictor:
             y_diff=y_diff,
             eval_set=eval_set,
             X_ml=X_ml_train,
+            X_ml_val=X_ml_val,
             y_ml_val=y_ml_val,
         )
 

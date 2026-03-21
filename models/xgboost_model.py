@@ -60,6 +60,7 @@ class XGBoostF5Model:
         y_diff: pd.Series,
         eval_set: tuple = None,
         X_ml: pd.DataFrame = None,
+        X_ml_val: pd.DataFrame = None,
         y_ml_val: pd.Series = None,
     ):
         """
@@ -70,24 +71,27 @@ class XGBoostF5Model:
             y_ml: Binary target (1 = home wins F5)
             y_total: Total F5 runs
             y_diff: Home F5 runs - Away F5 runs
-            eval_set: Optional (X_val, y_dict) for early stopping
-            X_ml: Optional separate feature matrix for ML classifier only.
-                  Pass push-excluded rows to avoid ties being coded as away wins.
-            y_ml_val: Optional validation target for ML classifier (used with X_ml).
+            eval_set: Optional (X_val, y_dict) for early stopping on regressors
+            X_ml: Optional feature matrix for ML classifier (push-excluded rows).
+            X_ml_val: Matching validation features for ML classifier eval.
+            y_ml_val: Matching validation target for ML classifier eval.
         """
         self.feature_names = list(X.columns)
 
         # ── Moneyline Classifier ───────────────────────────────────────
-        # Use X_ml if provided (e.g. push-excluded subset), else fall back to X.
         logger.info("Training F5 moneyline classifier...")
         self.ml_classifier = xgb.XGBClassifier(**XGBOOST_PARAMS)
 
         X_fit = X_ml if X_ml is not None else X
         fit_params = {}
-        if eval_set:
+        if eval_set and X_ml_val is not None and y_ml_val is not None:
+            # Push-excluded val set — X_ml_val and y_ml_val are aligned
+            fit_params["eval_set"] = [(X_ml_val, y_ml_val)]
+            fit_params["verbose"] = False
+        elif eval_set and X_ml is None:
+            # No push exclusion — use the main eval_set
             X_val, y_val = eval_set
-            val_ml = y_ml_val if y_ml_val is not None else y_val["ml"]
-            fit_params["eval_set"] = [(X_val, val_ml)]
+            fit_params["eval_set"] = [(X_val, y_val["ml"])]
             fit_params["verbose"] = False
 
         self.ml_classifier.fit(X_fit, y_ml, **fit_params)
