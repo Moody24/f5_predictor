@@ -416,7 +416,7 @@ def cmd_predict(args):
     logger.info(f"Found {len(upcoming)} upcoming games")
 
     if upcoming.empty:
-        logger.info("No upcoming games found.")
+        logger.info("No upcoming regular season games found. Regular season may not have started yet.")
         return
 
     # ── Fetch Current Odds ─────────────────────────────────────────────

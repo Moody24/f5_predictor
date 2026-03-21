@@ -50,6 +50,7 @@ class MLBStatsFetcher:
                 "startDate": start_date,
                 "endDate": end_date,
                 "hydrate": "team,venue,probablePitcher,linescore",
+                "gameType": "R",  # Regular season only — exclude spring training (S) and exhibition (E)
             },
         )
         rows = []
