@@ -366,6 +366,7 @@ class FeatureEngineer:
         Uses numpy arrays for output to avoid df.at[] overhead and memory blowup.
         """
         from data.fetchers.weather import VENUE_COORDS
+        from collections import defaultdict, deque
 
         df = df.sort_values("date").reset_index(drop=True).copy()
         dates = pd.to_datetime(df["date"])
@@ -377,8 +378,10 @@ class FeatureEngineer:
             travel_distance = np.zeros(n)
             games_7d = np.full(n, 3.0)
 
-            team_last = {}   # team_id -> (date, venue)
-            team_dates = {}  # team_id -> [dates]
+            # team_id -> (last_date, last_venue)
+            team_last: dict = {}
+            # team_id -> deque of recent dates pruned to 7-day window (O(1) count)
+            team_recent: dict = defaultdict(deque)
 
             for i in range(n):
                 tid = df.at[i, tid_col]
@@ -398,10 +401,12 @@ class FeatureEngineer:
                     if p and c:
                         travel_distance[i] = round(self._haversine(p[0], p[1], c[0], c[1]), 0)
 
-                if tid not in team_dates:
-                    team_dates[tid] = []
-                games_7d[i] = sum(1 for d in team_dates[tid] if (gdate - d).days <= 7)
-                team_dates[tid].append(gdate)
+                # Prune dates outside 7-day window from the left, then count — O(1) amortized
+                dq = team_recent[tid]
+                while dq and (gdate - dq[0]).days > 7:
+                    dq.popleft()
+                games_7d[i] = len(dq)
+                dq.append(gdate)
                 team_last[tid] = (gdate, venue)
 
             df[f"{side}_rest_days"] = rest_days

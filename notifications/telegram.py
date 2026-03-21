@@ -8,12 +8,9 @@ Requires in .env:
   TELEGRAM_CHAT_ID     (your chat ID)
 """
 import os
-import json
 import logging
 import requests
-from datetime import datetime
 
-from config.settings import PREDICTIONS_DIR
 from notifications.claude_analyzer import analyze_today
 
 logger = logging.getLogger(__name__)
@@ -60,8 +57,8 @@ def send_daily_predictions():
     Main entry point: analyze today's predictions and send via Telegram.
     Called by scheduler.py.
     """
-    today = datetime.now().strftime("%Y-%m-%d")
-    pred_path = PREDICTIONS_DIR / f"{today}.json"
+    from utils import predictions_path
+    pred_path = predictions_path()
 
     if not pred_path.exists():
         logger.info("No predictions to send")

@@ -87,8 +87,8 @@ Keep it under 400 words. Be direct — this goes to a bettor's phone."""
 
 def analyze_today() -> str:
     """Load today's predictions and analyze them."""
-    today = datetime.now().strftime("%Y-%m-%d")
-    pred_path = PREDICTIONS_DIR / f"{today}.json"
+    from utils import predictions_path
+    pred_path = predictions_path()
 
     if not pred_path.exists():
         return "No predictions found for today."
@@ -144,6 +144,8 @@ def _fallback_summary(predictions_json: dict) -> str:
             lines.append("Suggested 2-Leg Parlay:")
             for leg in parlay_legs:
                 lines.append(f"  - {leg['game']} — {leg['market']} {leg['side']}")
+        else:
+            lines.append("  (Not enough edges from different games for a parlay)")
     else:
         lines.append("No actionable edges found today.")
 
