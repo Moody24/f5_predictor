@@ -78,6 +78,11 @@ class XGBoostF5Model:
         """
         self.feature_names = list(X.columns)
 
+        # Unpack eval_set once so all three models can use it
+        X_val, y_val = None, None
+        if eval_set:
+            X_val, y_val = eval_set
+
         # ── Moneyline Classifier ───────────────────────────────────────
         logger.info("Training F5 moneyline classifier...")
         self.ml_classifier = xgb.XGBClassifier(**XGBOOST_PARAMS)
@@ -88,9 +93,7 @@ class XGBoostF5Model:
             # Push-excluded val set — X_ml_val and y_ml_val are aligned
             fit_params["eval_set"] = [(X_ml_val, y_ml_val)]
             fit_params["verbose"] = False
-        elif eval_set and X_ml is None:
-            # No push exclusion — use the main eval_set
-            X_val, y_val = eval_set
+        elif eval_set:
             fit_params["eval_set"] = [(X_val, y_val["ml"])]
             fit_params["verbose"] = False
 
