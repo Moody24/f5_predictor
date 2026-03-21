@@ -83,7 +83,7 @@ f5_predictor/
 | MLB Stats API | No | Free, no auth |
 | Statcast/pybaseball | No | Free, no auth |
 | Open-Meteo | No | Free, no auth |
-| The Odds API | `ODDS_API_KEY` | 500 req/mo free tier |
+| The Odds API | `ODDS_API_KEY` | Starter tier ($20/mo) — historical odds endpoint enabled for CLV |
 | Anthropic (Claude) | `ANTHROPIC_API_KEY` | Optional, ~$0.01/day |
 | Twilio (WhatsApp) | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` | Optional |
 

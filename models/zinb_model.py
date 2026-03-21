@@ -227,9 +227,11 @@ class ZINBModel:
         X_aligned = self._align_to_model(model, X, exog_cols)
 
         try:
-            # which="prob" works for ZeroInflated models only
+            # which="prob" works for ZeroInflated models only.
+            # Use .values.flat[0] to safely extract a scalar regardless of
+            # whether statsmodels returns a 1-element Series or (1,1) DataFrame.
             probs = np.array([
-                model.predict(X_aligned, which="prob", y_values=k).values[0]
+                float(model.predict(X_aligned, which="prob", y_values=k).values.flat[0])
                 for k in range(max_runs + 1)
             ])
             probs = np.maximum(probs, 0)

@@ -147,7 +147,26 @@ ODDS_SPORT = "baseball_mlb"
 ODDS_REGIONS = "us"
 ODDS_MARKETS = "h2h,spreads,totals"
 ODDS_BOOKMAKERS = ["fanduel", "draftkings", "betmgm", "caesars"]
-F5_RATIO = 5 / 9  # Historical ratio of F5 runs to full-game runs
+F5_RATIO = 5 / 9  # Historical ratio of F5 runs to full-game runs (league average)
+
+# Empirical F5/game-total ratios by starter quality tier.
+# Better starters keep games lower-scoring through 5 innings relative to the full game.
+F5_RATIO_TIERS = {
+    "ace": 0.52,      # avg_runs_per_start < 2.5 — pitch deep, suppress offense early
+    "mid": 0.556,     # avg_runs_per_start 2.5–3.5 — league average
+    "back_end": 0.60, # avg_runs_per_start > 3.5 — early exits inflate F5 run share
+}
+
+
+def get_f5_ratio(avg_runs_per_start: float = None) -> float:
+    """Return F5/game ratio based on the average runs-per-start of both starters."""
+    if avg_runs_per_start is None:
+        return F5_RATIO
+    if avg_runs_per_start < 2.5:
+        return F5_RATIO_TIERS["ace"]
+    elif avg_runs_per_start < 3.5:
+        return F5_RATIO_TIERS["mid"]
+    return F5_RATIO_TIERS["back_end"]
 
 # ── Team Name Mapping (Odds API → MLB Stats API) ─────────────────────
 # The Odds API and MLB Stats API use slightly different team name formats.

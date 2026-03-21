@@ -18,7 +18,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 import numpy as np
 
-from config.settings import CURRENT_SEASON, DATA_DIR, MODEL_DIR, MLB_TO_ODDS_TEAM_MAP, F5_RATIO
+from config.settings import CURRENT_SEASON, DATA_DIR, MODEL_DIR, MLB_TO_ODDS_TEAM_MAP, F5_RATIO, get_f5_ratio
 from data.fetchers.mlb_stats import MLBStatsFetcher
 from data.fetchers.statcast import StatcastFetcher, PYBASEBALL_AVAILABLE
 from data.fetchers.odds_api import OddsApiFetcher
@@ -109,6 +109,12 @@ def cmd_fetch(args):
         sc = StatcastFetcher()
         season_start = f"{seasons[-1]}-04-01"
         season_end = f"{seasons[-1]}-10-01"
+        pitcher_ids = {
+            int(pid)
+            for _, game in valid.iterrows()
+            for col in ["away_starter_id", "home_starter_id"]
+            if pd.notna(pid := game.get(col)) and pid
+        }
         for i, pid in enumerate(list(pitcher_ids)[:args.max_pitchers]):
             if i % 20 == 0:
                 logger.info(f"  Statcast pitcher {i}...")
@@ -118,6 +124,9 @@ def cmd_fetch(args):
                     statcast_profiles[pid] = profile
             except Exception:
                 continue
+        if statcast_profiles:
+            sc.save_profile_cache(statcast_profiles, seasons[-1])
+            logger.info(f"Statcast profiles saved: {len(statcast_profiles)}")
 
     # ── Weather Data ────────────────────────────────────────────────────
     logger.info("Fetching weather data...")
@@ -272,13 +281,66 @@ def cmd_train(args):
     if not importance.empty:
         logger.info(f"\n{importance.to_string()}")
 
+    # ── Build diagnostics before saving ────────────────────────────────
+    diagnostics = {
+        "trained_at": datetime.now().isoformat(),
+        "n_train": len(train),
+        "n_val": len(val),
+        "feature_count": len(feature_cols),
+        "zinb_weight": predictor.zinb_weight,
+        "xgb_weight": predictor.xgb_weight,
+        "calibrator_fitted": predictor.calibrator is not None,
+    }
+
+    # Brier score on validation set
+    brier_probs = []
+    brier_actuals = []
+    try:
+        for i in range(min(len(val), 300)):
+            x_row = X_val.iloc[[i]]
+            pred_row = predictor.xgb.predict(x_row)
+            brier_probs.append(float(pred_row["home_win_prob"][0]))
+            brier_actuals.append(float(val["home_f5_win"].iloc[i]))
+        if brier_probs:
+            brier = float(np.mean(
+                [(p - a) ** 2 for p, a in zip(brier_probs, brier_actuals)]
+            ))
+            diagnostics["brier_score_xgb"] = round(brier, 4)
+    except Exception as e:
+        logger.debug(f"Brier score failed: {e}")
+
+    # Calibration curve (10 bins) using XGBoost probabilities
+    try:
+        if brier_probs and brier_actuals:
+            bins = np.linspace(0, 1, 11)
+            cal_curve = []
+            for lo, hi in zip(bins[:-1], bins[1:]):
+                mask = [(lo <= p < hi) for p in brier_probs]
+                if any(mask):
+                    mean_pred = float(np.mean([p for p, m in zip(brier_probs, mask) if m]))
+                    mean_actual = float(np.mean([a for a, m in zip(brier_actuals, mask) if m]))
+                    cal_curve.append({"bin_lo": round(lo, 2), "bin_hi": round(hi, 2),
+                                      "mean_pred": round(mean_pred, 3), "mean_actual": round(mean_actual, 3)})
+            diagnostics["calibration_curve"] = cal_curve
+    except Exception as e:
+        logger.debug(f"Calibration curve failed: {e}")
+
+    # Top-10 feature importances
+    try:
+        fi = predictor.xgb.get_feature_importance(top_n=10)
+        if not fi.empty:
+            diagnostics["top10_feature_importance"] = fi.to_dict(orient="records")
+    except Exception as e:
+        logger.debug(f"Feature importance failed: {e}")
+
     # ── Save (versioned) ────────────────────────────────────────────────
-    version_dir = predictor.save("f5_combined")
+    version_dir = predictor.save("f5_combined", diagnostics=diagnostics)
     logger.info(f"Models saved to {version_dir}")
 
 
 def _match_odds_to_game(
-    mlb_home: str, mlb_away: str, odds_df: pd.DataFrame
+    mlb_home: str, mlb_away: str, odds_df: pd.DataFrame,
+    f5_ratio: float = F5_RATIO,
 ) -> dict:
     """
     Match a game's odds from the Odds API DataFrame by team name.
@@ -309,7 +371,7 @@ def _match_odds_to_game(
     total_rows = game_odds[game_odds["market"] == "total"]
     if not total_rows.empty and "total_line" in total_rows.columns:
         full_game_line = total_rows["total_line"].median()
-        market["total_line"] = round(full_game_line * F5_RATIO * 2) / 2  # round to nearest 0.5
+        market["total_line"] = round(full_game_line * f5_ratio * 2) / 2  # round to nearest 0.5
         if "over_implied" in total_rows.columns:
             market["over_implied"] = total_rows["over_implied"].mean()
             market["under_implied"] = total_rows["under_implied"].mean()
@@ -321,7 +383,7 @@ def _match_odds_to_game(
     spread_rows = game_odds[game_odds["market"] == "spread"]
     if not spread_rows.empty and "home_spread" in spread_rows.columns:
         full_spread = spread_rows["home_spread"].median()
-        market["home_spread"] = round(full_spread * F5_RATIO * 2) / 2
+        market["home_spread"] = round(full_spread * f5_ratio * 2) / 2
         if "home_spread_implied" in spread_rows.columns:
             market["home_spread_implied"] = spread_rows["home_spread_implied"].mean()
         if "home_spread_price" in spread_rows.columns:
@@ -370,19 +432,60 @@ def cmd_predict(args):
     # ── Build Features & Predict ───────────────────────────────────────
     fe = FeatureEngineer()
 
+    # Load Statcast profiles from training-time cache (avoids live API calls)
+    statcast_profiles = {}
+    if PYBASEBALL_AVAILABLE:
+        try:
+            sc = StatcastFetcher()
+            statcast_profiles = sc.load_profile_cache(CURRENT_SEASON)
+            if not statcast_profiles:
+                statcast_profiles = sc.load_profile_cache(CURRENT_SEASON - 1)
+        except Exception:
+            pass
+
     # Fetch pitcher/team stats for today's games
+    # For pitchers with < 10 qualified starts this season, blend current stats
+    # with prior-season stats so rookies/returning pitchers get a fair baseline.
     pitcher_stats = {}
     team_stats = {}
-    statcast_profiles = {}
 
     for _, game in upcoming.iterrows():
         for pid_col in ["away_starter_id", "home_starter_id"]:
             pid = game.get(pid_col)
-            if pid and pid not in pitcher_stats:
-                try:
-                    pitcher_stats[int(pid)] = mlb.get_pitcher_f5_stats(int(pid))
-                except Exception:
-                    pass
+            if not pid:
+                continue
+            pid = int(pid)
+            if pid in pitcher_stats:
+                continue
+            try:
+                current = mlb.get_pitcher_f5_stats(pid, CURRENT_SEASON)
+                qualified_starts = (current or {}).get("qualified_starts", 0)
+                if qualified_starts < 10:
+                    prior = mlb.get_pitcher_f5_stats(pid, CURRENT_SEASON - 1)
+                    if current and prior and qualified_starts > 0:
+                        weight = qualified_starts / 10.0
+                        blend_keys = [
+                            "avg_ip", "avg_runs_per_start", "avg_er_per_start",
+                            "avg_hits_per_start", "avg_walks_per_start",
+                            "avg_k_per_start", "avg_pitches", "k_bb_ratio",
+                            "last5_avg_runs", "last10_avg_runs",
+                        ]
+                        blended = dict(current)
+                        for key in blend_keys:
+                            c_val = current.get(key)
+                            p_val = prior.get(key)
+                            if c_val is not None and p_val is not None:
+                                blended[key] = round(weight * float(c_val) + (1 - weight) * float(p_val), 3)
+                        pitcher_stats[pid] = blended
+                        logger.debug(f"Pitcher {pid}: blended {qualified_starts} current + prior ({weight:.1f}/{1-weight:.1f})")
+                    elif prior:
+                        pitcher_stats[pid] = prior
+                    elif current:
+                        pitcher_stats[pid] = current
+                else:
+                    pitcher_stats[pid] = current
+            except Exception:
+                pass
 
         for tid_col in ["away_team_id", "home_team_id"]:
             tid = game.get(tid_col)
@@ -425,6 +528,8 @@ def cmd_predict(args):
             "venue": game["venue_name"],
             "away_starter": game.get("away_starter_name", "TBD"),
             "home_starter": game.get("home_starter_name", "TBD"),
+            # ISO timestamp for closing-line CLV lookup (paid Odds API tier)
+            "commence_time": str(game.get("game_datetime", game["date"])),
         }
 
         X_game = features.iloc[[idx]]
@@ -443,11 +548,22 @@ def cmd_predict(args):
         try:
             prediction = predictor.predict_game(X_game, game_info)
 
-            # Find edges vs market
+            # Find edges vs market — use per-game dynamic F5 ratio
             edges = []
+            market = {}
             if not current_odds.empty:
+                starter_runs = [
+                    float(pitcher_stats[int(pid)]["avg_runs_per_start"])
+                    for col in ["away_starter_id", "home_starter_id"]
+                    if (pid := game.get(col))
+                    and int(pid) in pitcher_stats
+                    and pitcher_stats[int(pid)].get("avg_runs_per_start") is not None
+                ]
+                game_f5_ratio = get_f5_ratio(
+                    sum(starter_runs) / len(starter_runs) if starter_runs else None
+                )
                 market = _match_odds_to_game(
-                    game["home_team"], game["away_team"], current_odds
+                    game["home_team"], game["away_team"], current_odds, f5_ratio=game_f5_ratio
                 )
                 if market:
                     edges = predictor.find_all_edges(prediction, market)
@@ -466,6 +582,13 @@ def cmd_predict(args):
                 },
                 "run_line": prediction["run_line"],
                 "edges": edges,
+                # Opening market implied probs — used for CLV computation next day
+                "opening_market": {
+                    "home_ml_implied": market.get("home_ml_implied"),
+                    "away_ml_implied": market.get("away_ml_implied"),
+                    "total_line": market.get("total_line"),
+                    "over_implied": market.get("over_implied"),
+                } if market else {},
             })
 
         except Exception as e:

@@ -184,20 +184,27 @@ def main():
     logger.info(f"DAILY SCHEDULER RUN — {run_start.strftime('%Y-%m-%d %H:%M')} UTC")
     logger.info("=" * 60)
 
-    # Step 1: Check yesterday's accuracy
+    # Step 1: Check yesterday's accuracy (+ CLV via paid Odds API historical endpoint)
     if not args.skip_accuracy:
         logger.info("Step 1: Checking yesterday's accuracy...")
         t0 = datetime.now()
         mlb = MLBStatsFetcher()
-        accuracy = check_yesterday_accuracy(mlb)
+        from data.fetchers.odds_api import OddsApiFetcher
+        odds_fetcher = OddsApiFetcher()
+        accuracy = check_yesterday_accuracy(mlb, odds_fetcher=odds_fetcher if odds_fetcher.api_key else None)
         if accuracy:
             metrics["yesterday_ml_accuracy"] = accuracy.get("ml_accuracy")
             metrics["yesterday_total_error"] = accuracy.get("avg_total_error")
             metrics["yesterday_edge_accuracy"] = accuracy.get("edge_bet_accuracy")
+            clv_line = ""
+            if "avg_clv" in accuracy:
+                metrics["yesterday_avg_clv"] = accuracy.get("avg_clv")
+                clv_line = f" | Avg CLV: {accuracy['avg_clv']:+.2f}% ({accuracy.get('positive_clv_pct', '?')}% positive)"
             logger.info(
                 f"  ML accuracy: {accuracy.get('ml_accuracy', '?')}% | "
                 f"Avg total error: {accuracy.get('avg_total_error', '?')} runs | "
                 f"Edge accuracy: {accuracy.get('edge_bet_accuracy', 'N/A')}%"
+                + clv_line
             )
         else:
             logger.info("  No predictions from yesterday to evaluate")

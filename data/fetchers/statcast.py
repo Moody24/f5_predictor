@@ -203,6 +203,30 @@ class StatcastFetcher:
             df.to_parquet(cache_path, index=False)
         return df
 
+    # ── Profile Cache ──────────────────────────────────────────────────
+
+    def save_profile_cache(self, profiles: dict, season: int):
+        """Persist pitcher profile dict (pid → profile) as a parquet cache."""
+        if not profiles:
+            return
+        rows = [{"pitcher_id": int(pid), **profile} for pid, profile in profiles.items()]
+        cache_path = self.cache_dir / f"profiles_{season}.parquet"
+        pd.DataFrame(rows).to_parquet(cache_path, index=False)
+        logger.info(f"Saved {len(profiles)} Statcast profiles to {cache_path}")
+
+    def load_profile_cache(self, season: int) -> dict:
+        """Load pitcher profile dict from parquet cache. Returns {} if not found."""
+        cache_path = self.cache_dir / f"profiles_{season}.parquet"
+        if not cache_path.exists():
+            return {}
+        df = pd.read_parquet(cache_path)
+        profiles = {
+            int(row["pitcher_id"]): {k: v for k, v in row.items() if k != "pitcher_id"}
+            for _, row in df.iterrows()
+        }
+        logger.info(f"Loaded {len(profiles)} Statcast profiles from {cache_path}")
+        return profiles
+
     # ── Matchup-Level Features ─────────────────────────────────────────
 
     def get_handedness_splits(

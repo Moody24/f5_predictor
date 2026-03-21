@@ -17,6 +17,9 @@ from scipy.optimize import minimize_scalar
 from typing import Optional
 import logging
 import json
+import joblib
+
+from sklearn.isotonic import IsotonicRegression
 
 from models.zinb_model import ZINBModel
 from models.xgboost_model import XGBoostF5Model
@@ -52,6 +55,10 @@ class CombinedF5Predictor:
         self.odds = OddsApiFetcher()
         self.zinb_weight = zinb_weight
         self.xgb_weight = xgb_weight
+        # Isotonic calibrator fitted on validation set blended probabilities.
+        # Sits between the ensemble blend and Kelly sizing to correct
+        # systematic over/underconfidence without changing the blend logic.
+        self.calibrator = None
 
     # ── Training ───────────────────────────────────────────────────────
 
@@ -123,6 +130,7 @@ class CombinedF5Predictor:
         # ── Optimize Ensemble Weights ──────────────────────────────────
         if X_val is not None:
             self._optimize_weights(X_val, y_val, away_feature_cols, home_feature_cols)
+            self._fit_calibrator(X_val, y_val, away_feature_cols, home_feature_cols)
 
         self._away_feature_cols = away_feature_cols
         self._home_feature_cols = home_feature_cols
@@ -175,6 +183,44 @@ class CombinedF5Predictor:
         self.xgb_weight = round(1 - result.x, 2)
         logger.info(f"Optimized weights: ZINB={self.zinb_weight}, XGB={self.xgb_weight}")
 
+    def _fit_calibrator(
+        self,
+        X_val: pd.DataFrame,
+        y_val: pd.DataFrame,
+        away_cols: list,
+        home_cols: list,
+    ):
+        """
+        Fit isotonic regression calibrator on validation-set blended probabilities.
+        Corrects systematic over/underconfidence without changing blend logic.
+        """
+        blended_probs = []
+        actuals = []
+        for i in range(min(len(X_val), 500)):
+            try:
+                zinb_sim = self.zinb.simulate_game(
+                    X_val[away_cols].iloc[[i]],
+                    X_val[home_cols].iloc[[i]],
+                    n_sims=500,
+                )
+                xgb_pred = self.xgb.predict(X_val.iloc[[i]])
+                zinb_home = zinb_sim["moneyline"]["home_win_pct"] / 100
+                xgb_home = xgb_pred["home_win_prob"][0]
+                blended = self.zinb_weight * zinb_home + self.xgb_weight * xgb_home
+                blended_probs.append(float(np.clip(blended, 0.01, 0.99)))
+                actuals.append(float(y_val["home_f5_win"].iloc[i]))
+            except Exception:
+                continue
+
+        if len(blended_probs) < 20:
+            logger.warning("Not enough val samples to fit calibrator. Skipping.")
+            return
+
+        calibrator = IsotonicRegression(out_of_bounds="clip")
+        calibrator.fit(blended_probs, actuals)
+        self.calibrator = calibrator
+        logger.info(f"Isotonic calibrator fitted on {len(blended_probs)} validation samples.")
+
     # ── Prediction ─────────────────────────────────────────────────────
 
     def predict_game(
@@ -202,6 +248,15 @@ class CombinedF5Predictor:
 
         # ── Ensemble ───────────────────────────────────────────────────
         prediction = self._ensemble_predictions(zinb_sim, xgb_pred)
+
+        # ── Calibration (isotonic regression post-processing) ──────────
+        if self.calibrator is not None:
+            raw_home = prediction["moneyline"]["home_prob"]
+            cal_home = float(self.calibrator.predict([raw_home])[0])
+            cal_home = float(np.clip(cal_home, 0.01, 0.99))
+            prediction["moneyline"]["home_prob"] = round(cal_home, 3)
+            prediction["moneyline"]["away_prob"] = round(1 - cal_home, 3)
+            prediction["metadata"]["calibrated"] = True
 
         # ── Add Game Info ──────────────────────────────────────────────
         if game_info:
@@ -437,8 +492,8 @@ class CombinedF5Predictor:
 
     # ── Persistence ────────────────────────────────────────────────────
 
-    def save(self, name: str = "combined_f5", version_dir=None):
-        """Save both models and ensemble config to a versioned directory."""
+    def save(self, name: str = "combined_f5", version_dir=None, diagnostics: dict = None):
+        """Save both models, ensemble config, and optional diagnostics to a versioned directory."""
         if version_dir is None:
             version_dir = create_model_version_dir()
 
@@ -450,10 +505,21 @@ class CombinedF5Predictor:
             "xgb_weight": self.xgb_weight,
             "away_feature_cols": self._away_feature_cols,
             "home_feature_cols": self._home_feature_cols,
+            "calibrator_fitted": self.calibrator is not None,
         }
         config_path = version_dir / f"{name}_config.json"
         with open(config_path, "w") as f:
             json.dump(config, f, indent=2)
+
+        if self.calibrator is not None:
+            joblib.dump(self.calibrator, version_dir / f"{name}_calibrator.joblib")
+            logger.info("Isotonic calibrator saved.")
+
+        if diagnostics:
+            diag_path = version_dir / "model_diagnostics.json"
+            with open(diag_path, "w") as f:
+                json.dump(diagnostics, f, indent=2, default=str)
+            logger.info(f"Model diagnostics saved to {diag_path}")
 
         logger.info(f"Combined model saved to {version_dir}")
         return version_dir
@@ -473,4 +539,10 @@ class CombinedF5Predictor:
         self.xgb_weight = config["xgb_weight"]
         self._away_feature_cols = config["away_feature_cols"]
         self._home_feature_cols = config["home_feature_cols"]
+
+        cal_path = version_dir / f"{name}_calibrator.joblib"
+        if cal_path.exists():
+            self.calibrator = joblib.load(cal_path)
+            logger.info("Isotonic calibrator loaded.")
+
         logger.info(f"Combined model loaded from {version_dir}")
