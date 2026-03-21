@@ -152,10 +152,25 @@ class MLBStatsFetcher:
         """
         Derive F5-specific stats from game log.
         Returns rolling averages of runs allowed through 5 IP.
+
+        Falls back to prior seasons if the requested season has no data
+        (covers retired pitchers, injury years, and bullpen conversions).
         """
-        log = self.get_pitcher_game_log(player_id, season)
+        # Try requested season first, then fall back through prior seasons
+        seasons_to_try = [season] + [s for s in range(season - 1, 2020, -1)]
+        log = pd.DataFrame()
+        used_season = season
+        for s in seasons_to_try:
+            log = self.get_pitcher_game_log(player_id, s)
+            if not log.empty:
+                used_season = s
+                break
+
         if log.empty:
             return {}
+
+        if used_season != season:
+            logger.debug(f"Pitcher {player_id}: no {season} data, using {used_season}")
 
         # Filter games where pitcher threw at least 5 innings
         qualified = log[log["innings_pitched"] >= 5.0].copy()

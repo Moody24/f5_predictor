@@ -3,6 +3,9 @@ set -e
 
 FEATURE_MATRIX="storage/cache/feature_matrix.parquet"
 MODEL_DIR="storage/models/saved"
+# Bump this version when a code change requires a full pipeline rebuild
+PIPELINE_VERSION="v3"
+PIPELINE_VERSION_FILE="storage/cache/.pipeline_version"
 
 echo "=== F5 Predictor Entrypoint ==="
 
@@ -12,18 +15,35 @@ if [ -f "$FEATURE_MATRIX" ]; then
     MATRIX_ROWS=$(python -c "import pandas as pd; print(len(pd.read_parquet('$FEATURE_MATRIX', columns=['game_pk'])))")
 fi
 
-# If no feature matrix, no trained model, or matrix is corrupted (>20k rows), run full pipeline
-if [ ! -f "$FEATURE_MATRIX" ] || [ -z "$(ls -A $MODEL_DIR 2>/dev/null)" ] || [ "$MATRIX_ROWS" -gt 20000 ]; then
-    if [ "$MATRIX_ROWS" -gt 20000 ]; then
-        echo "Feature matrix corrupted ($MATRIX_ROWS rows). Rebuilding..."
-        rm -f "$FEATURE_MATRIX"
-    else
-        echo "No data/models found. Running initial pipeline (2021-2025)..."
-    fi
+# Read stored pipeline version (empty if never set)
+STORED_VERSION=""
+if [ -f "$PIPELINE_VERSION_FILE" ]; then
+    STORED_VERSION=$(cat "$PIPELINE_VERSION_FILE")
+fi
+
+NEED_REBUILD=false
+REBUILD_REASON=""
+
+if [ ! -f "$FEATURE_MATRIX" ] || [ -z "$(ls -A $MODEL_DIR 2>/dev/null)" ]; then
+    NEED_REBUILD=true
+    REBUILD_REASON="No data/models found"
+elif [ "$MATRIX_ROWS" -gt 20000 ]; then
+    NEED_REBUILD=true
+    REBUILD_REASON="Feature matrix corrupted ($MATRIX_ROWS rows)"
+    rm -f "$FEATURE_MATRIX"
+elif [ "$STORED_VERSION" != "$PIPELINE_VERSION" ]; then
+    NEED_REBUILD=true
+    REBUILD_REASON="Pipeline version changed ($STORED_VERSION -> $PIPELINE_VERSION)"
+    rm -f "$FEATURE_MATRIX"
+fi
+
+if [ "$NEED_REBUILD" = true ]; then
+    echo "$REBUILD_REASON. Running full pipeline (2021-2025)..."
     python main.py pipeline --start-season 2021 --end-season 2025
+    echo "$PIPELINE_VERSION" > "$PIPELINE_VERSION_FILE"
     echo "Initial pipeline complete."
 else
-    echo "Data and models found ($MATRIX_ROWS rows). Skipping initial pipeline."
+    echo "Data and models found ($MATRIX_ROWS rows, $STORED_VERSION). Skipping initial pipeline."
 fi
 
 echo "Starting daily scheduler..."
