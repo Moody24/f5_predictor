@@ -4,7 +4,7 @@ set -e
 FEATURE_MATRIX="storage/cache/feature_matrix.parquet"
 MODEL_DIR="storage/models/saved"
 # Bump this version when a code change requires a full pipeline rebuild
-PIPELINE_VERSION="v4"
+PIPELINE_VERSION="v5"
 PIPELINE_VERSION_FILE="storage/cache/.pipeline_version"
 
 echo "=== F5 Predictor Entrypoint ==="

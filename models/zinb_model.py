@@ -53,6 +53,11 @@ class ZINBModel:
         self.home_model = None
         self.away_features = None
         self.home_features = None
+        # Explicit count-exog column names stored at training time.
+        # model.model.exog_names includes inflation params for ZINB, so we
+        # store the actual column names passed to the count component here.
+        self.away_exog_cols = None
+        self.home_exog_cols = None
         self.is_fitted = False
 
     # ── Training ───────────────────────────────────────────────────────
@@ -81,10 +86,10 @@ class ZINBModel:
         self.home_features = list(X_home.columns)
 
         logger.info("Fitting ZINB model for away team F5 runs...")
-        self.away_model = self._fit_zinb(X_away, y_away, inflation_features)
+        self.away_model, self.away_exog_cols = self._fit_zinb(X_away, y_away, inflation_features)
 
         logger.info("Fitting ZINB model for home team F5 runs...")
-        self.home_model = self._fit_zinb(X_home, y_home, inflation_features)
+        self.home_model, self.home_exog_cols = self._fit_zinb(X_home, y_home, inflation_features)
 
         self.is_fitted = True
         logger.info("ZINB models fitted successfully.")
@@ -107,10 +112,11 @@ class ZINBModel:
         X: pd.DataFrame,
         y: pd.Series,
         inflation_features: list[str] = None,
-    ) -> ZeroInflatedNegativeBinomialP:
-        """Fit a single ZINB model."""
+    ) -> tuple:
+        """Fit a single ZINB model. Returns (result, count_exog_cols)."""
         X_clean = self._drop_constant_cols(X.astype(float).fillna(0.0))
         X_const = sm.add_constant(X_clean)
+        exog_cols = list(X_const.columns)
 
         # Zero-inflation covariates (intercept-only — avoids exog_infl singularity)
         X_inflate = None
@@ -128,15 +134,16 @@ class ZINBModel:
                 method="bfgs",
             )
             logger.info(f"ZINB converged. AIC: {result.aic:.1f}, BIC: {result.bic:.1f}")
-            return result
+            return result, exog_cols
 
         except Exception as e:
             logger.warning(f"ZINB fitting failed: {e}. Falling back to standard NB.")
             return self._fit_nb_fallback(X_const, y)
 
-    def _fit_nb_fallback(self, X: pd.DataFrame, y: pd.Series):
+    def _fit_nb_fallback(self, X: pd.DataFrame, y: pd.Series) -> tuple:
         """Fallback to standard Negative Binomial if ZINB fails."""
         X_clean = self._drop_constant_cols(X)
+        exog_cols = list(X_clean.columns)
         try:
             model = sm.NegativeBinomial(
                 endog=y.astype(int),
@@ -144,20 +151,21 @@ class ZINBModel:
             )
             result = model.fit(maxiter=ZINB_MAX_ITER, disp=False, method="bfgs")
             logger.info(f"NB fallback converged. AIC: {result.aic:.1f}")
-            return result
+            return result, exog_cols
         except Exception as e:
             logger.warning(f"NB fallback failed: {e}. Falling back to Poisson.")
             return self._fit_poisson_fallback(X_clean, y)
 
-    def _fit_poisson_fallback(self, X: pd.DataFrame, y: pd.Series):
+    def _fit_poisson_fallback(self, X: pd.DataFrame, y: pd.Series) -> tuple:
         """Last-resort Poisson regression — almost never singular."""
+        exog_cols = list(X.columns)
         model = sm.Poisson(
             endog=y.astype(int),
             exog=X.astype(float),
         )
         result = model.fit(maxiter=ZINB_MAX_ITER, disp=False, method="bfgs")
         logger.info(f"Poisson fallback converged. AIC: {result.aic:.1f}")
-        return result
+        return result, exog_cols
 
     # ── Prediction ─────────────────────────────────────────────────────
 
@@ -179,8 +187,8 @@ class ZINBModel:
         if not self.is_fitted:
             raise ValueError("Model not fitted. Call .fit() first.")
 
-        away_probs = self._get_pmf(self.away_model, X_away, max_runs)
-        home_probs = self._get_pmf(self.home_model, X_home, max_runs)
+        away_probs = self._get_pmf(self.away_model, X_away, max_runs, self.away_exog_cols)
+        home_probs = self._get_pmf(self.home_model, X_home, max_runs, self.home_exog_cols)
 
         return {
             "away_probs": away_probs,
@@ -189,23 +197,24 @@ class ZINBModel:
             "home_mean": np.sum(np.arange(max_runs + 1) * home_probs),
         }
 
-    def _align_to_model(self, model, X: pd.DataFrame) -> pd.DataFrame:
+    def _align_to_model(self, model, X: pd.DataFrame, exog_cols: list) -> pd.DataFrame:
         """
-        Align X to the exact columns the model was trained on.
+        Align X to the exact columns the count component was trained on.
 
-        Uses model.model.exog_names (stored by statsmodels) to reindex X to
-        the training-time column set. Missing columns are filled with 0.
+        Uses explicitly stored exog_cols (from training time) to reindex X.
+        This avoids using model.model.exog_names which for ZINB includes
+        inflation parameter names prepended at the front, causing shape mismatches.
+        Missing columns are filled with 0.
         Does NOT call _drop_constant_cols — that must only run at training
         time (std of a single inference row is always NaN/0, dropping everything).
         """
         X_float = X.astype(float).fillna(0.0)
         # Add constant without forcing — statsmodels names it "const"
         X_const = sm.add_constant(X_float, has_constant="add")
-        trained_cols = model.model.exog_names
-        return X_const.reindex(columns=trained_cols, fill_value=0.0)
+        return X_const.reindex(columns=exog_cols, fill_value=0.0)
 
     def _get_pmf(
-        self, model, X: pd.DataFrame, max_runs: int
+        self, model, X: pd.DataFrame, max_runs: int, exog_cols: list
     ) -> np.ndarray:
         """
         Get probability mass function from fitted ZINB, NB, or Poisson model.
@@ -215,7 +224,7 @@ class ZINBModel:
         using NB for dispersion-aware models or Poisson otherwise.
         """
         from scipy.stats import poisson as scipy_poisson
-        X_aligned = self._align_to_model(model, X)
+        X_aligned = self._align_to_model(model, X, exog_cols)
 
         try:
             # which="prob" works for ZeroInflated models only
@@ -377,6 +386,8 @@ class ZINBModel:
                 "home_model": self.home_model,
                 "away_features": self.away_features,
                 "home_features": self.home_features,
+                "away_exog_cols": self.away_exog_cols,
+                "home_exog_cols": self.home_exog_cols,
             },
             path,
         )
@@ -391,5 +402,7 @@ class ZINBModel:
         self.home_model = data["home_model"]
         self.away_features = data["away_features"]
         self.home_features = data["home_features"]
+        self.away_exog_cols = data.get("away_exog_cols")
+        self.home_exog_cols = data.get("home_exog_cols")
         self.is_fitted = True
         logger.info(f"ZINB model loaded from {path}")

@@ -172,8 +172,8 @@ class MLBStatsFetcher:
         if used_season != season:
             logger.debug(f"Pitcher {player_id}: no {season} data, using {used_season}")
 
-        # Filter games where pitcher threw at least 5 innings
-        qualified = log[log["innings_pitched"] >= 5.0].copy()
+        # Filter games where pitcher threw at least 3 innings (captures short starters/openers)
+        qualified = log[log["innings_pitched"] >= 3.0].copy()
         if qualified.empty:
             return {"games": 0, "qualified_starts": 0}
 
