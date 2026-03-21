@@ -123,6 +123,13 @@ def fetch_incremental():
     else:
         combined = new_features
 
+    # Recompute rolling and travel features on the full combined matrix so
+    # the newly appended rows get correct rolling averages and rest-day counts.
+    derived = fe.derived_column_names()
+    combined = combined.drop(columns=[c for c in derived if c in combined.columns])
+    combined = fe.add_rolling_features(combined)
+    combined = fe.add_travel_features(combined)
+
     combined.to_parquet(matrix_path, index=False)
     n_new = len(new_features)
     logger.info(f"Added {n_new} new games. Total: {len(combined)}")

@@ -107,20 +107,19 @@ class UmpireFetcher:
         self, ump_assignments: pd.DataFrame, games_df: pd.DataFrame
     ) -> dict:
         """
-        Build umpire tendency profiles from historical game outcomes.
+        Build umpire tendency profiles using leave-one-out (LOO) estimates.
 
-        For each umpire, computes:
-          - avg total F5 runs in their games vs league avg
-          - games behind plate (experience)
-
-        Args:
-            ump_assignments: DataFrame with game_pk, umpire_id
-            games_df: Full game data with game_pk, total_f5_runs, etc.
+        For each historical game, the umpire's tendency is computed from all
+        OTHER games they called — the current game's outcome is excluded so it
+        cannot leak into its own feature. A full-history entry (keyed by
+        ump_id) is also stored for use at inference time (today's games have
+        no outcome to exclude).
 
         Returns:
-            Dict {umpire_id: {rpg_factor, experience, ...}}
+            Dict with two key types:
+              game_pk (int)      -> tendency for that specific historical game (LOO)
+              "ump_{ump_id}" (str) -> tendency for inference (full history)
         """
-        # Merge umpire assignments with game outcomes
         merged = ump_assignments.merge(
             games_df[["game_pk", "total_f5_runs"]].dropna(),
             on="game_pk",
@@ -132,22 +131,41 @@ class UmpireFetcher:
 
         league_avg_f5 = merged["total_f5_runs"].mean()
 
-        tendencies = {}
-        for ump_id, group in merged.groupby("umpire_id"):
-            n_games = len(group)
-            if n_games < 10:  # need minimum sample
+        # Per-umpire aggregates for LOO computation
+        ump_agg = merged.groupby("umpire_id")["total_f5_runs"].agg(
+            total_runs="sum", n_games="count"
+        )
+
+        tendencies: dict = {}
+
+        for _, row in merged.iterrows():
+            ump_id = row["umpire_id"]
+            if ump_id not in ump_agg.index:
                 continue
-
-            avg_runs = group["total_f5_runs"].mean()
-
-            tendencies[ump_id] = {
-                "ump_rpg_factor": round(avg_runs / max(league_avg_f5, 0.1), 3),
-                "ump_experience": n_games,
-                "ump_avg_f5_runs": round(avg_runs, 2),
-                "ump_name": group["umpire_name"].iloc[0] if "umpire_name" in group.columns else "Unknown",
+            agg = ump_agg.loc[ump_id]
+            n = int(agg["n_games"])
+            if n < 11:  # need at least 10 prior games after LOO
+                continue
+            loo_avg = (agg["total_runs"] - row["total_f5_runs"]) / (n - 1)
+            tendencies[int(row["game_pk"])] = {
+                "ump_rpg_factor": round(loo_avg / max(league_avg_f5, 0.1), 3),
+                "ump_experience": n - 1,
             }
 
-        logger.info(f"Built tendencies for {len(tendencies)} umpires (min 10 games)")
+        # Full-history entries keyed by ump_id string (used at inference)
+        for ump_id, agg in ump_agg.iterrows():
+            n = int(agg["n_games"])
+            if n < 10:
+                continue
+            full_avg = agg["total_runs"] / n
+            tendencies[f"ump_{ump_id}"] = {
+                "ump_rpg_factor": round(full_avg / max(league_avg_f5, 0.1), 3),
+                "ump_experience": n,
+            }
+
+        n_games = sum(1 for k in tendencies if isinstance(k, int))
+        n_umps = sum(1 for k in tendencies if isinstance(k, str))
+        logger.info(f"Built tendencies for {n_umps} umpires (min 10 games), {n_games} LOO game entries")
         return tendencies
 
     def get_umpire_features(
@@ -155,6 +173,10 @@ class UmpireFetcher:
     ) -> dict:
         """
         Get umpire features for a specific game.
+
+        For historical games (training): uses the LOO entry keyed by game_pk.
+        For inference (today's games): falls back to the full-history entry
+        keyed by ump_id.
 
         Returns dict with umpire feature values or defaults.
         """
@@ -171,11 +193,22 @@ class UmpireFetcher:
             return defaults
 
         ump_id = row.iloc[0].get("umpire_id")
-        if ump_id is None or ump_id not in tendencies:
-            return defaults
 
-        t = tendencies[ump_id]
-        return {
-            "ump_rpg_factor": t["ump_rpg_factor"],
-            "ump_experience": t["ump_experience"],
-        }
+        # Prefer LOO entry for historical games (no target leakage)
+        if game_pk in tendencies:
+            t = tendencies[game_pk]
+            return {
+                "ump_rpg_factor": t["ump_rpg_factor"],
+                "ump_experience": t["ump_experience"],
+            }
+
+        # Inference path: use full-history entry keyed by ump_id
+        ump_key = f"ump_{ump_id}"
+        if ump_key in tendencies:
+            t = tendencies[ump_key]
+            return {
+                "ump_rpg_factor": t["ump_rpg_factor"],
+                "ump_experience": t["ump_experience"],
+            }
+
+        return defaults

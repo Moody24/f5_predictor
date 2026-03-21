@@ -63,6 +63,10 @@ class CombinedF5Predictor:
         y_val: pd.DataFrame = None,
         away_feature_cols: list[str] = None,
         home_feature_cols: list[str] = None,
+        X_ml_train: pd.DataFrame = None,
+        y_ml_train: pd.Series = None,
+        X_ml_val: pd.DataFrame = None,
+        y_ml_val: pd.Series = None,
     ):
         """
         Train both models.
@@ -107,10 +111,12 @@ class CombinedF5Predictor:
 
         self.xgb.fit(
             X=X_train,
-            y_ml=y_train["home_f5_win"],
+            y_ml=y_ml_train if y_ml_train is not None else y_train["home_f5_win"],
             y_total=y_train["total_f5_runs"],
             y_diff=y_diff,
             eval_set=eval_set,
+            X_ml=X_ml_train,
+            y_ml_val=y_ml_val,
         )
 
         # ── Optimize Ensemble Weights ──────────────────────────────────

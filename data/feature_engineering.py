@@ -44,13 +44,12 @@ class FeatureEngineer:
     HANDEDNESS_FEATURES = [
         "starter_vs_r_xwoba", "starter_vs_l_xwoba",
         "starter_vs_r_whiff", "starter_vs_l_whiff",
-        "lineup_pct_lhb",  # % left-handed batters in lineup
     ]
 
     TEAM_OFFENSE_FEATURES = [
-        "team_ops", "team_woba", "team_iso",
+        "team_ops", "team_iso",
         "team_k_pct", "team_bb_pct",
-        "team_runs_per_game", "team_wrc_plus",
+        "team_runs_per_game",
     ]
 
     CONTEXTUAL_FEATURES = [
@@ -98,6 +97,26 @@ class FeatureEngineer:
             + self.LINEUP_FEATURES
             + self.ROLLING_FEATURES
         )
+
+    def derived_column_names(self, window_sizes: list = None) -> list[str]:
+        """
+        Names of all columns added by add_rolling_features and add_travel_features.
+        Used to drop and recompute these columns when needed.
+        """
+        if window_sizes is None:
+            window_sizes = ROLLING_WINDOWS
+        cols = []
+        for side in ["away", "home"]:
+            for w in window_sizes:
+                cols.append(f"{side}_team_f5_runs_last{w}")
+                cols.append(f"{side}_team_f5_allowed_last{w}")
+            cols += [
+                f"{side}_rest_days",
+                f"{side}_is_back_to_back",
+                f"{side}_travel_distance_miles",
+                f"{side}_games_in_last_7d",
+            ]
+        return cols
 
     # ── Main Pipeline ──────────────────────────────────────────────────
 
@@ -458,15 +477,16 @@ class FeatureEngineer:
         team_log = pd.concat([away_games, home_games], ignore_index=True)
         team_log = team_log.sort_values(["team_id", "date"])
 
-        # Compute rolling stats per team (shifted to exclude current game)
+        # Compute rolling stats per team (shifted to exclude current game).
+        # min_periods=3 avoids meaningless averages from 1-2 game samples.
         for window in window_sizes:
             team_log[f"roll{window}_scored"] = (
                 team_log.groupby("team_id")["runs_scored"]
-                .transform(lambda x: x.shift(1).rolling(window, min_periods=1).mean())
+                .transform(lambda x: x.shift(1).rolling(window, min_periods=3).mean())
             )
             team_log[f"roll{window}_allowed"] = (
                 team_log.groupby("team_id")["runs_allowed"]
-                .transform(lambda x: x.shift(1).rolling(window, min_periods=1).mean())
+                .transform(lambda x: x.shift(1).rolling(window, min_periods=3).mean())
             )
 
         # Split back into away/home lookups and merge onto original df

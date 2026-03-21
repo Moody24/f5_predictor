@@ -59,30 +59,38 @@ class XGBoostF5Model:
         y_total: pd.Series,
         y_diff: pd.Series,
         eval_set: tuple = None,
+        X_ml: pd.DataFrame = None,
+        y_ml_val: pd.Series = None,
     ):
         """
         Fit all three XGBoost sub-models.
 
         Args:
-            X: Feature matrix
+            X: Feature matrix (used for total and diff regressors)
             y_ml: Binary target (1 = home wins F5)
             y_total: Total F5 runs
             y_diff: Home F5 runs - Away F5 runs
             eval_set: Optional (X_val, y_dict) for early stopping
+            X_ml: Optional separate feature matrix for ML classifier only.
+                  Pass push-excluded rows to avoid ties being coded as away wins.
+            y_ml_val: Optional validation target for ML classifier (used with X_ml).
         """
         self.feature_names = list(X.columns)
 
         # ── Moneyline Classifier ───────────────────────────────────────
+        # Use X_ml if provided (e.g. push-excluded subset), else fall back to X.
         logger.info("Training F5 moneyline classifier...")
         self.ml_classifier = xgb.XGBClassifier(**XGBOOST_PARAMS)
 
+        X_fit = X_ml if X_ml is not None else X
         fit_params = {}
         if eval_set:
             X_val, y_val = eval_set
-            fit_params["eval_set"] = [(X_val, y_val["ml"])]
+            val_ml = y_ml_val if y_ml_val is not None else y_val["ml"]
+            fit_params["eval_set"] = [(X_val, val_ml)]
             fit_params["verbose"] = False
 
-        self.ml_classifier.fit(X, y_ml, **fit_params)
+        self.ml_classifier.fit(X_fit, y_ml, **fit_params)
 
         # ── Total Runs Regressor ───────────────────────────────────────
         logger.info("Training F5 total runs regressor...")

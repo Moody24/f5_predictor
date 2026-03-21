@@ -190,7 +190,11 @@ def cmd_train(args):
     logger.info(f"Valid training rows: {len(df)}")
 
     # Feature columns (everything that's not a target or ID)
-    exclude = {"game_pk", "date", "venue_name", "season"} | set(target_cols) | {"f5_push", "f5_diff"}
+    # Exclude team/venue IDs — encoding team identity directly causes overfitting
+    exclude = {
+        "game_pk", "date", "venue_name", "venue_id", "season",
+        "away_team_id", "home_team_id",
+    } | set(target_cols) | {"f5_push", "f5_diff"}
     feature_cols = [c for c in df.columns if c not in exclude and df[c].dtype in [np.float64, np.int64, float, int]]
     logger.info(f"Feature columns: {len(feature_cols)}")
 
@@ -199,7 +203,17 @@ def cmd_train(args):
     split_idx = int(len(df) * 0.8)
     train = df.iloc[:split_idx]
     val = df.iloc[split_idx:]
-    logger.info(f"Train: {len(train)} games | Val: {len(val)} games")
+
+    # Exclude tied F5 games from the moneyline classifier — ties are coded
+    # as home_f5_win=0 which would be confused with away wins.
+    # ZINB and total/diff models still see all games.
+    train_no_push = train[train["f5_diff"] != 0]
+    val_no_push = val[val["f5_diff"] != 0]
+    push_pct = (df["f5_diff"] == 0).mean() * 100
+    logger.info(
+        f"Train: {len(train)} games | Val: {len(val)} games "
+        f"| Push rate: {push_pct:.1f}% (excluded from ML classifier)"
+    )
 
     # ── Impute Missing Features ────────────────────────────────────────
     X_train = train[feature_cols].copy()
@@ -209,13 +223,26 @@ def cmd_train(args):
         X_train[col] = X_train[col].fillna(median)
         X_val[col] = X_val[col].fillna(median)
 
+    X_train_no_push = train_no_push[feature_cols].copy()
+    X_val_no_push = val_no_push[feature_cols].copy()
+    for col in feature_cols:
+        median = X_train[col].median()  # use same median from full train set
+        X_train_no_push[col] = X_train_no_push[col].fillna(median)
+        X_val_no_push[col] = X_val_no_push[col].fillna(median)
+
     # ── Train Combined Model ───────────────────────────────────────────
     predictor = CombinedF5Predictor()
 
     y_train = train[["away_f5_runs", "home_f5_runs", "total_f5_runs", "home_f5_win"]].copy()
     y_val = val[["away_f5_runs", "home_f5_runs", "total_f5_runs", "home_f5_win"]].copy()
 
-    predictor.fit(X_train, y_train, X_val, y_val)
+    predictor.fit(
+        X_train, y_train, X_val, y_val,
+        X_ml_train=X_train_no_push,
+        y_ml_train=train_no_push["home_f5_win"],
+        X_ml_val=X_val_no_push,
+        y_ml_val=val_no_push["home_f5_win"],
+    )
 
     # ── Evaluate ───────────────────────────────────────────────────────
     logger.info("\n── XGBoost Evaluation ──")
@@ -353,9 +380,27 @@ def cmd_predict(args):
                 except Exception:
                     pass
 
-    features = fe.build_game_features(
+    today_base = fe.build_game_features(
         upcoming, pitcher_stats, statcast_profiles, team_stats
     )
+
+    # Rolling and travel features require historical context.
+    # Load the feature matrix, drop its derived columns, append today's base
+    # features, recompute rolling+travel on the combined set, then extract
+    # only today's rows. shift(1) in add_rolling_features ensures today's
+    # (not-yet-played) game does not contribute to its own rolling stats.
+    hist_path = DATA_DIR / "feature_matrix.parquet"
+    if hist_path.exists():
+        hist_df = pd.read_parquet(hist_path)
+        derived = fe.derived_column_names()
+        hist_df = hist_df.drop(columns=[c for c in derived if c in hist_df.columns])
+        combined = pd.concat([hist_df, today_base], ignore_index=True)
+        combined = fe.add_rolling_features(combined)
+        combined = fe.add_travel_features(combined)
+        today_pks = set(today_base["game_pk"].values)
+        features = combined[combined["game_pk"].isin(today_pks)].reset_index(drop=True)
+    else:
+        features = today_base
 
     # ── Generate Predictions ───────────────────────────────────────────
     all_predictions = []

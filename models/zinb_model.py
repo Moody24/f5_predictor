@@ -189,6 +189,20 @@ class ZINBModel:
             "home_mean": np.sum(np.arange(max_runs + 1) * home_probs),
         }
 
+    def _align_to_model(self, model, X: pd.DataFrame) -> pd.DataFrame:
+        """
+        Align X to the exact columns the model was trained on.
+
+        statsmodels stores the design matrix column names in model.model.exog_names.
+        At inference, X may have different columns than training (e.g. rolling
+        features present at train time but not at inference, or more columns due
+        to better pitcher coverage). Reindex fills missing cols with 0.
+        """
+        X_clean = self._drop_constant_cols(X.astype(float).fillna(0.0))
+        X_const = sm.add_constant(X_clean, has_constant="add")
+        trained_cols = model.model.exog_names
+        return X_const.reindex(columns=trained_cols, fill_value=0.0)
+
     def _get_pmf(
         self, model, X: pd.DataFrame, max_runs: int
     ) -> np.ndarray:
@@ -198,12 +212,12 @@ class ZINBModel:
         For ZINB: uses predict(which="prob") to get P(Y=k) for each k.
         For NB fallback: computes PMF from predicted mean and dispersion.
         """
-        X_const = sm.add_constant(X.astype(float))
+        X_aligned = self._align_to_model(model, X)
 
         try:
             # Try built-in probability prediction (works for both ZINB and NB)
             probs = np.array([
-                model.predict(X_const, which="prob", y_values=k).values[0]
+                model.predict(X_aligned, which="prob", y_values=k).values[0]
                 for k in range(max_runs + 1)
             ])
             probs = np.maximum(probs, 0)  # clamp negatives
@@ -216,7 +230,7 @@ class ZINBModel:
 
         # Fallback: compute PMF from predicted mean using NB distribution
         try:
-            mu = float(model.predict(X_const, which="mean").values[0])
+            mu = float(model.predict(X_aligned, which="mean").values[0])
             alpha = np.exp(model.lnalpha) if hasattr(model, "lnalpha") else 1.0
             r = 1 / max(alpha, 1e-10)
             p = r / (r + mu)
