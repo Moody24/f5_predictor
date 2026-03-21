@@ -9,16 +9,28 @@ PIPELINE_VERSION_FILE="storage/cache/.pipeline_version"
 
 echo "=== F5 Predictor Entrypoint ==="
 
-# Validate feature matrix: expect ~1 row per game (12k-15k). If bloated (>20k), rebuild.
-MATRIX_ROWS=0
-if [ -f "$FEATURE_MATRIX" ]; then
-    MATRIX_ROWS=$(python -c "import pandas as pd; print(len(pd.read_parquet('$FEATURE_MATRIX', columns=['game_pk'])))")
-fi
-
-# Read stored pipeline version (empty if never set)
+# Read stored pipeline version first — if it doesn't match, delete matrix before
+# trying to read it (avoids crashing on a corrupt matrix from a prior bad run).
 STORED_VERSION=""
 if [ -f "$PIPELINE_VERSION_FILE" ]; then
     STORED_VERSION=$(cat "$PIPELINE_VERSION_FILE")
+fi
+
+if [ "$STORED_VERSION" != "$PIPELINE_VERSION" ] && [ -f "$FEATURE_MATRIX" ]; then
+    echo "Pipeline version changed ($STORED_VERSION -> $PIPELINE_VERSION). Removing stale matrix."
+    rm -f "$FEATURE_MATRIX"
+fi
+
+# Validate feature matrix row count. Use || to handle pyarrow crashes on corrupt files.
+MATRIX_ROWS=0
+if [ -f "$FEATURE_MATRIX" ]; then
+    MATRIX_ROWS=$(python -c "
+import pandas as pd, sys
+try:
+    print(len(pd.read_parquet('$FEATURE_MATRIX', columns=['game_pk'])))
+except Exception:
+    print(0)
+" 2>/dev/null) || MATRIX_ROWS=0
 fi
 
 NEED_REBUILD=false
@@ -27,13 +39,9 @@ REBUILD_REASON=""
 if [ ! -f "$FEATURE_MATRIX" ] || [ -z "$(ls -A $MODEL_DIR 2>/dev/null)" ]; then
     NEED_REBUILD=true
     REBUILD_REASON="No data/models found"
-elif [ "$MATRIX_ROWS" -gt 20000 ]; then
+elif [ "$MATRIX_ROWS" -eq 0 ] || [ "$MATRIX_ROWS" -gt 20000 ]; then
     NEED_REBUILD=true
-    REBUILD_REASON="Feature matrix corrupted ($MATRIX_ROWS rows)"
-    rm -f "$FEATURE_MATRIX"
-elif [ "$STORED_VERSION" != "$PIPELINE_VERSION" ]; then
-    NEED_REBUILD=true
-    REBUILD_REASON="Pipeline version changed ($STORED_VERSION -> $PIPELINE_VERSION)"
+    REBUILD_REASON="Feature matrix invalid (rows=$MATRIX_ROWS)"
     rm -f "$FEATURE_MATRIX"
 fi
 
