@@ -452,7 +452,7 @@ def cmd_predict(args):
     for _, game in upcoming.iterrows():
         for pid_col in ["away_starter_id", "home_starter_id"]:
             pid = game.get(pid_col)
-            if not pid:
+            if not pd.notna(pid) or not pid:
                 continue
             pid = int(pid)
             if pid in pitcher_stats:
