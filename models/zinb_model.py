@@ -89,6 +89,19 @@ class ZINBModel:
         self.is_fitted = True
         logger.info("ZINB models fitted successfully.")
 
+    @staticmethod
+    def _drop_constant_cols(X: pd.DataFrame) -> pd.DataFrame:
+        """Drop zero-variance columns that make the design matrix singular."""
+        Xf = X.astype(float).fillna(0.0)
+        varying = Xf.std() > 1e-8
+        # Always keep the constant column if present
+        if "const" in Xf.columns:
+            varying["const"] = True
+        dropped = list(Xf.columns[~varying])
+        if dropped:
+            logger.debug(f"Dropping {len(dropped)} constant columns: {dropped[:5]}...")
+        return Xf[Xf.columns[varying]]
+
     def _fit_zinb(
         self,
         X: pd.DataFrame,
@@ -96,14 +109,11 @@ class ZINBModel:
         inflation_features: list[str] = None,
     ) -> ZeroInflatedNegativeBinomialP:
         """Fit a single ZINB model."""
-        # Add constant for intercept
-        X_const = sm.add_constant(X.astype(float))
+        X_clean = self._drop_constant_cols(X.astype(float).fillna(0.0))
+        X_const = sm.add_constant(X_clean)
 
-        # Zero-inflation covariates
-        if inflation_features:
-            X_inflate = sm.add_constant(X[inflation_features].astype(float))
-        else:
-            X_inflate = None  # statsmodels uses intercept-only inflation by default
+        # Zero-inflation covariates (intercept-only — avoids exog_infl singularity)
+        X_inflate = None
 
         try:
             model = ZeroInflatedNegativeBinomialP(
@@ -126,12 +136,27 @@ class ZINBModel:
 
     def _fit_nb_fallback(self, X: pd.DataFrame, y: pd.Series):
         """Fallback to standard Negative Binomial if ZINB fails."""
-        model = sm.NegativeBinomial(
+        X_clean = self._drop_constant_cols(X)
+        try:
+            model = sm.NegativeBinomial(
+                endog=y.astype(int),
+                exog=X_clean.astype(float),
+            )
+            result = model.fit(maxiter=ZINB_MAX_ITER, disp=False, method="bfgs")
+            logger.info(f"NB fallback converged. AIC: {result.aic:.1f}")
+            return result
+        except Exception as e:
+            logger.warning(f"NB fallback failed: {e}. Falling back to Poisson.")
+            return self._fit_poisson_fallback(X_clean, y)
+
+    def _fit_poisson_fallback(self, X: pd.DataFrame, y: pd.Series):
+        """Last-resort Poisson regression — almost never singular."""
+        model = sm.Poisson(
             endog=y.astype(int),
             exog=X.astype(float),
         )
-        result = model.fit(maxiter=ZINB_MAX_ITER, disp=False)
-        logger.info(f"NB fallback converged. AIC: {result.aic:.1f}")
+        result = model.fit(maxiter=ZINB_MAX_ITER, disp=False, method="bfgs")
+        logger.info(f"Poisson fallback converged. AIC: {result.aic:.1f}")
         return result
 
     # ── Prediction ─────────────────────────────────────────────────────
