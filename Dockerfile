@@ -16,7 +16,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Create directories that map to the persistent volume
-RUN mkdir -p data/cache data/predictions data/logs models/saved
+RUN mkdir -p data/cache data/predictions data/logs data/models/saved
 
 COPY entrypoint.sh .
 RUN chmod +x entrypoint.sh

@@ -2,7 +2,7 @@
 set -e
 
 FEATURE_MATRIX="data/cache/feature_matrix.parquet"
-MODEL_DIR="models/saved"
+MODEL_DIR="data/models/saved"
 
 echo "=== F5 Predictor Entrypoint ==="
 
