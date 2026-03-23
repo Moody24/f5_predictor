@@ -88,14 +88,12 @@ class XGBoostF5Model:
         self.ml_classifier = xgb.XGBClassifier(**XGBOOST_PARAMS)
 
         X_fit = X_ml if X_ml is not None else X
-        fit_params = {}
+        fit_params = {"verbose": False}
         if eval_set and X_ml_val is not None and y_ml_val is not None:
-            # Push-excluded val set — X_ml_val and y_ml_val are aligned
+            # Push-excluded val set — early stopping uses this eval set
             fit_params["eval_set"] = [(X_ml_val, y_ml_val)]
-            fit_params["verbose"] = False
         elif eval_set:
             fit_params["eval_set"] = [(X_val, y_val["ml"])]
-            fit_params["verbose"] = False
 
         self.ml_classifier.fit(X_fit, y_ml, **fit_params)
 
@@ -103,10 +101,9 @@ class XGBoostF5Model:
         logger.info("Training F5 total runs regressor...")
         self.total_regressor = xgb.XGBRegressor(**XGBOOST_REGRESSOR_PARAMS)
 
-        fit_params_reg = {}
+        fit_params_reg = {"verbose": False}
         if eval_set:
             fit_params_reg["eval_set"] = [(X_val, y_val["total"])]
-            fit_params_reg["verbose"] = False
 
         self.total_regressor.fit(X, y_total, **fit_params_reg)
 
@@ -114,10 +111,9 @@ class XGBoostF5Model:
         logger.info("Training F5 run differential regressor...")
         self.diff_regressor = xgb.XGBRegressor(**XGBOOST_REGRESSOR_PARAMS)
 
-        fit_params_diff = {}
+        fit_params_diff = {"verbose": False}
         if eval_set:
             fit_params_diff["eval_set"] = [(X_val, y_val["diff"])]
-            fit_params_diff["verbose"] = False
 
         self.diff_regressor.fit(X, y_diff, **fit_params_diff)
 

@@ -151,7 +151,7 @@ class CombinedF5Predictor:
             w_xgb = 1 - w_zinb
             total_loss = 0
             count = 0
-            for i in range(min(len(X_val), 200)):  # sample for speed
+            for i in range(len(X_val)):
                 try:
                     zinb_sim = self.zinb.simulate_game(
                         X_val[away_cols].iloc[[i]],

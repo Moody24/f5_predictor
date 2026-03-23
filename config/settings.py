@@ -104,7 +104,8 @@ XGBOOST_PARAMS = {
     "eval_metric": "logloss",
     "max_depth": 5,
     "learning_rate": 0.05,
-    "n_estimators": 300,
+    "n_estimators": 500,        # raised for early stopping headroom
+    "early_stopping_rounds": 20,
     "subsample": 0.8,
     "colsample_bytree": 0.8,
     "min_child_weight": 5,
@@ -119,7 +120,8 @@ XGBOOST_REGRESSOR_PARAMS = {
     "eval_metric": "rmse",
     "max_depth": 5,
     "learning_rate": 0.05,
-    "n_estimators": 300,
+    "n_estimators": 500,        # raised for early stopping headroom
+    "early_stopping_rounds": 20,
     "subsample": 0.8,
     "colsample_bytree": 0.8,
     "min_child_weight": 5,

@@ -52,6 +52,23 @@ def send_telegram(message: str) -> bool:
     return success
 
 
+def _load_yesterday_accuracy() -> dict:
+    """Load the most recent entry from the daily accuracy log."""
+    import json
+    from config.settings import DATA_DIR
+    log_path = DATA_DIR / "accuracy" / "daily_accuracy.json"
+    if not log_path.exists():
+        return {}
+    try:
+        with open(log_path) as f:
+            log = json.load(f)
+        if log:
+            return log[-1]  # most recent entry
+    except Exception as e:
+        logger.warning(f"Could not load accuracy log: {e}")
+    return {}
+
+
 def send_daily_predictions():
     """
     Main entry point: analyze today's predictions and send via Telegram.
@@ -64,7 +81,8 @@ def send_daily_predictions():
         logger.info("No predictions to send")
         return
 
-    analysis = analyze_today()
+    accuracy_context = _load_yesterday_accuracy()
+    analysis = analyze_today(accuracy_context=accuracy_context or None)
 
     success = send_telegram(analysis)
     if success:

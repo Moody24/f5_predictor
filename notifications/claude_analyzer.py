@@ -19,29 +19,46 @@ logger = logging.getLogger(__name__)
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
 
-def analyze_predictions(predictions_json: dict) -> str:
+def analyze_predictions(predictions_json: dict, accuracy_context: dict = None) -> str:
     """
     Send predictions to Claude for natural language analysis.
 
     Args:
         predictions_json: Full predictions dict from cmd_predict output
+        accuracy_context: Optional dict with yesterday's accuracy metrics
+                          (ml_accuracy, avg_total_error, avg_clv, edge_bet_accuracy)
 
     Returns:
         Natural language analysis string
     """
     if not ANTHROPIC_API_KEY:
         logger.warning("ANTHROPIC_API_KEY not set — skipping Claude analysis")
-        return _fallback_summary(predictions_json)
+        return _fallback_summary(predictions_json, accuracy_context)
 
     try:
         import anthropic
     except ImportError:
         logger.warning("anthropic package not installed — using fallback summary")
-        return _fallback_summary(predictions_json)
+        return _fallback_summary(predictions_json, accuracy_context)
 
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
-    # Build a compact representation for the prompt
+    # ── Accuracy context block ─────────────────────────────────────────
+    accuracy_section = ""
+    if accuracy_context:
+        ml_acc = accuracy_context.get("ml_accuracy", "?")
+        total_err = accuracy_context.get("avg_total_error", "?")
+        edge_acc = accuracy_context.get("edge_bet_accuracy")
+        clv = accuracy_context.get("avg_clv")
+
+        acc_parts = [f"ML hit rate: {ml_acc}%", f"avg total error: {total_err} runs"]
+        if edge_acc is not None:
+            acc_parts.append(f"edge bet accuracy: {edge_acc}%")
+        if clv is not None:
+            acc_parts.append(f"avg CLV: {clv:+.2f}%")
+        accuracy_section = f"Yesterday's model performance: {' | '.join(acc_parts)}\n\n"
+
+    # ── Build per-game summary with divergence signal ──────────────────
     games_summary = []
     for game in predictions_json.get("games", []):
         info = game["game_info"]
@@ -49,43 +66,55 @@ def analyze_predictions(predictions_json: dict) -> str:
         total = game.get("total", {})
         edges = game.get("edges", [])
 
+        # Model divergence: if ZINB and XGBoost disagree by >8% on home win prob,
+        # the game is uncertain — flag it so Claude can warn users.
+        zinb_home = ml.get("zinb_home", ml["home_prob"])
+        xgb_home = ml.get("xgb_home", ml["home_prob"])
+        divergence = abs(zinb_home - xgb_home)
+        divergence_flag = " [MODELS SPLIT]" if divergence > 0.08 else ""
+
         entry = (
             f"{info['away_team']} @ {info['home_team']} "
-            f"({info.get('away_starter', '?')} vs {info.get('home_starter', '?')})\n"
-            f"  ML: Home {ml['home_prob']*100:.0f}% / Away {ml['away_prob']*100:.0f}%\n"
+            f"({info.get('away_starter', '?')} vs {info.get('home_starter', '?')}){divergence_flag}\n"
+            f"  ML: Home {ml['home_prob']*100:.0f}% "
+            f"[ZINB {zinb_home*100:.0f}% / XGB {xgb_home*100:.0f}%] | "
+            f"Away {ml['away_prob']*100:.0f}%\n"
             f"  Total: {total.get('predicted', '?')} runs\n"
         )
         if edges:
             for e in edges:
-                entry += f"  EDGE: [{e['confidence']}] {e['market']} {e['side']} +{e['edge_pct']:.1f}%\n"
+                entry += (
+                    f"  EDGE: [{e['confidence']}] {e['market']} {e['side']} "
+                    f"+{e['edge_pct']:.1f}% (half-Kelly {e.get('kelly_half', 0)*100:.1f}%)\n"
+                )
         games_summary.append(entry)
 
-    prompt = f"""You are an expert MLB F5 (first 5 innings) betting analyst. Analyze today's predictions and give a concise daily briefing.
+    prompt = f"""You are an expert MLB F5 (first 5 innings) betting analyst. Analyze today's predictions and give a sharp daily briefing.
 
 Date: {predictions_json.get('date', 'today')}
-Games analyzed: {predictions_json.get('n_games', 0)}
+Games: {predictions_json.get('n_games', 0)}
 
-Predictions:
+{accuracy_section}Predictions (MODELS SPLIT = ZINB and XGBoost disagree by >8%, treat as uncertain):
 {chr(10).join(games_summary)}
 
 Provide:
-1. Top 3 strongest plays with brief reasoning (1-2 sentences each)
-2. Games to avoid (high uncertainty)
-3. Overall market read (pitcher-heavy day? lots of value? thin slate?)
-4. Best 2-leg parlay: pick the 2 most independent, highest-confidence legs (avoid same-game parlays). Show the legs, brief reasoning, and a rough combined probability estimate.
+1. Top 3 plays — prioritize games where ZINB and XGBoost AGREE (no [MODELS SPLIT] flag) and edge confidence is STRONG or MODERATE. 1-2 sentences of reasoning each.
+2. Games to avoid — specifically call out any [MODELS SPLIT] games or thin edges.
+3. Market read — pitcher-heavy day? run environment? notable matchups?
+4. Best 2-leg parlay — pick legs from DIFFERENT games with cross-model agreement. Show combined probability estimate.
 
-Keep it under 400 words. Be direct — this goes to a bettor's phone."""
+Keep it under 450 words. Be direct and specific — this goes straight to a bettor's phone."""
 
     message = client.messages.create(
         model="claude-haiku-4-5-20251001",
-        max_tokens=500,
+        max_tokens=600,
         messages=[{"role": "user", "content": prompt}],
     )
 
     return message.content[0].text
 
 
-def analyze_today() -> str:
+def analyze_today(accuracy_context: dict = None) -> str:
     """Load today's predictions and analyze them."""
     from utils import predictions_path
     pred_path = predictions_path()
@@ -96,7 +125,7 @@ def analyze_today() -> str:
     with open(pred_path) as f:
         predictions = json.load(f)
 
-    return analyze_predictions(predictions)
+    return analyze_predictions(predictions, accuracy_context=accuracy_context)
 
 
 def _fallback_summary(predictions_json: dict) -> str:
