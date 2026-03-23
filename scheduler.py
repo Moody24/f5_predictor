@@ -266,6 +266,9 @@ def main():
     except ImportError:
         logger.info("  Notification module not installed — skipping")
         metrics["notification_sent"] = False
+    except Exception as e:
+        logger.warning(f"  Notification failed (non-fatal): {e}")
+        metrics["notification_sent"] = False
 
     # Run summary
     total_s = (datetime.now() - run_start).seconds

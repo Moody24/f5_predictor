@@ -412,11 +412,14 @@ def cmd_predict(args):
     tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
 
     schedule = mlb.get_schedule(today, tomorrow)
+    if schedule.empty or "status" not in schedule.columns:
+        logger.info("No regular season games found. Regular season may not have started yet.")
+        return
     upcoming = schedule[schedule["status"] != "Final"]
     logger.info(f"Found {len(upcoming)} upcoming games")
 
     if upcoming.empty:
-        logger.info("No upcoming regular season games found. Regular season may not have started yet.")
+        logger.info("No upcoming games today.")
         return
 
     # ── Fetch Current Odds ─────────────────────────────────────────────

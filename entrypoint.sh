@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+# Do NOT use set -e here — we want the scheduler loop to survive individual run failures.
 
 FEATURE_MATRIX="storage/cache/feature_matrix.parquet"
 MODEL_DIR="storage/models/saved"
@@ -39,7 +39,7 @@ REBUILD_REASON=""
 if [ ! -f "$FEATURE_MATRIX" ] || [ -z "$(ls -A $MODEL_DIR 2>/dev/null)" ]; then
     NEED_REBUILD=true
     REBUILD_REASON="No data/models found"
-elif [ "$MATRIX_ROWS" -eq 0 ] || [ "$MATRIX_ROWS" -gt 20000 ]; then
+elif [ "$MATRIX_ROWS" -eq 0 ]; then
     NEED_REBUILD=true
     REBUILD_REASON="Feature matrix invalid (rows=$MATRIX_ROWS)"
     rm -f "$FEATURE_MATRIX"
@@ -48,11 +48,26 @@ fi
 if [ "$NEED_REBUILD" = true ]; then
     echo "$REBUILD_REASON. Running full pipeline (2021-2025)..."
     python main.py pipeline --start-season 2021 --end-season 2025
-    echo "$PIPELINE_VERSION" > "$PIPELINE_VERSION_FILE"
-    echo "Initial pipeline complete."
+    PIPELINE_EXIT=$?
+    if [ $PIPELINE_EXIT -ne 0 ]; then
+        echo "WARNING: Initial pipeline exited with code $PIPELINE_EXIT — continuing to scheduler anyway."
+    else
+        echo "$PIPELINE_VERSION" > "$PIPELINE_VERSION_FILE"
+        echo "Initial pipeline complete."
+    fi
 else
     echo "Data and models found ($MATRIX_ROWS rows, $STORED_VERSION). Skipping initial pipeline."
 fi
 
-echo "Starting daily scheduler..."
-python scheduler.py
+echo "Starting daily scheduler loop..."
+while true; do
+    python scheduler.py
+    EXIT_CODE=$?
+    if [ $EXIT_CODE -ne 0 ]; then
+        echo "Scheduler run failed (exit=$EXIT_CODE). Retrying in 1 hour..."
+        sleep 3600
+    else
+        echo "Scheduler run complete. Sleeping 22h until next run..."
+        sleep 79200
+    fi
+done
