@@ -9,6 +9,18 @@ PIPELINE_VERSION_FILE="storage/cache/.pipeline_version"
 
 echo "=== F5 Predictor Entrypoint ==="
 
+# Start Telegram bot immediately so /status and /predict work even during pipeline build
+python -c "
+from notifications.telegram_bot import start_bot_thread
+import time
+start_bot_thread()
+print('Telegram bot polling started')
+# Keep this process alive — bot thread is daemon so we park here until pipeline script takes over
+import signal, sys
+signal.pause()
+" &
+BOT_PID=$!
+
 # Read stored pipeline version first — if it doesn't match, delete matrix before
 # trying to read it (avoids crashing on a corrupt matrix from a prior bad run).
 STORED_VERSION=""
@@ -58,6 +70,9 @@ if [ "$NEED_REBUILD" = true ]; then
 else
     echo "Data and models found ($MATRIX_ROWS rows, $STORED_VERSION). Skipping initial pipeline."
 fi
+
+# Kill the standalone bot process — bot_runner.py starts its own thread
+kill $BOT_PID 2>/dev/null
 
 echo "Starting bot runner (scheduler + Telegram bot)..."
 python bot_runner.py
