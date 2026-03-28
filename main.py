@@ -15,8 +15,21 @@ import logging
 import sys
 from datetime import datetime, timedelta
 
+import json as _json
 import pandas as pd
 import numpy as np
+
+
+class _NumpyEncoder(_json.JSONEncoder):
+    """Serialize numpy scalars as native Python types instead of strings."""
+    def default(self, obj):
+        if isinstance(obj, (np.integer,)):
+            return int(obj)
+        if isinstance(obj, (np.floating,)):
+            return float(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return super().default(obj)
 
 from config.settings import CURRENT_SEASON, DATA_DIR, MODEL_DIR, MLB_TO_ODDS_TEAM_MAP, F5_RATIO, get_f5_ratio
 from data.fetchers.mlb_stats import MLBStatsFetcher
@@ -609,7 +622,7 @@ def cmd_predict(args):
         }
         json_path = PREDICTIONS_DIR / f"{today}.json"
         with open(json_path, "w") as f:
-            json.dump(output, f, indent=2, default=str)
+            json.dump(output, f, indent=2, cls=_NumpyEncoder)
         logger.info(f"Predictions saved to {json_path}")
 
 
