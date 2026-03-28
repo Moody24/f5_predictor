@@ -435,14 +435,23 @@ def cmd_predict(args):
     # ── Fetch Today's Schedule ─────────────────────────────────────────
     mlb = MLBStatsFetcher()
     today = datetime.now().strftime("%Y-%m-%d")
-    tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+    in_two_days = (datetime.now() + timedelta(days=2)).strftime("%Y-%m-%d")
 
-    schedule = mlb.get_schedule(today, tomorrow)
+    schedule = mlb.get_schedule(today, in_two_days)
     if schedule.empty or "status" not in schedule.columns:
         logger.info("No regular season games found. Regular season may not have started yet.")
         return
-    upcoming = schedule[schedule["status"] != "Final"]
-    logger.info(f"Found {len(upcoming)} upcoming games")
+
+    # Filter to non-Final games, then take only the earliest game date found.
+    # This ensures we always predict the next upcoming slate — whether that's
+    # today (morning run) or tomorrow (late-evening run after today's games finish).
+    upcoming_all = schedule[schedule["status"] != "Final"]
+    if upcoming_all.empty:
+        logger.info("No upcoming games in the next 2 days.")
+        return
+    next_game_date = str(upcoming_all["date"].min())[:10]
+    upcoming = upcoming_all[upcoming_all["date"].astype(str).str[:10] == next_game_date]
+    logger.info(f"Predicting {len(upcoming)} games for {next_game_date}")
 
     if upcoming.empty:
         logger.info("No upcoming games today.")
@@ -636,13 +645,17 @@ def cmd_predict(args):
     if all_predictions:
         from config.settings import PREDICTIONS_DIR, get_latest_model_dir
         import json
+        # Use the actual game date (not run date) so accuracy tracker can match
+        # predictions to results even when the pipeline runs late in the evening
+        # and tomorrow's games are fetched instead of today's.
+        pred_date = str(upcoming["date"].iloc[0])[:10] if not upcoming.empty else today
         output = {
-            "date": today,
+            "date": pred_date,
             "model_version": str(get_latest_model_dir().name),
             "n_games": len(all_predictions),
             "games": all_predictions,
         }
-        json_path = PREDICTIONS_DIR / f"{today}.json"
+        json_path = PREDICTIONS_DIR / f"{pred_date}.json"
         with open(json_path, "w") as f:
             json.dump(output, f, indent=2, cls=_NumpyEncoder)
         logger.info(f"Predictions saved to {json_path}")

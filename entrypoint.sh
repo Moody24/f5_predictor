@@ -4,7 +4,7 @@
 FEATURE_MATRIX="storage/cache/feature_matrix.parquet"
 MODEL_DIR="storage/models/saved"
 # Bump this version when a code change requires a full pipeline rebuild
-PIPELINE_VERSION="v6"
+PIPELINE_VERSION="v7"
 PIPELINE_VERSION_FILE="storage/cache/.pipeline_version"
 
 echo "=== F5 Predictor Entrypoint ==="
@@ -53,8 +53,8 @@ elif [ "$MATRIX_SIZE" -lt 1048576 ]; then
 fi
 
 if [ "$NEED_REBUILD" = true ]; then
-    echo "$REBUILD_REASON. Running full pipeline (2021-2025)..."
-    python main.py pipeline --start-season 2021 --end-season 2025
+    echo "$REBUILD_REASON. Running full pipeline (2021-2026)..."
+    python main.py pipeline --start-season 2021 --end-season 2026
     PIPELINE_EXIT=$?
     if [ $PIPELINE_EXIT -ne 0 ]; then
         echo "WARNING: Initial pipeline exited with code $PIPELINE_EXIT — continuing to scheduler anyway."
