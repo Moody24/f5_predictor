@@ -4,6 +4,7 @@ MLB Stats API Fetcher
 Free, no-key-required access to game schedules, box scores,
 pitcher game logs, and team stats from statsapi.mlb.com.
 """
+import json
 import requests
 import pandas as pd
 from datetime import datetime, timedelta
@@ -15,6 +16,10 @@ from config.settings import MLB_STATS_BASE, CURRENT_SEASON, DATA_DIR
 
 logger = logging.getLogger(__name__)
 
+# How long to consider a current-season pitcher/team cache entry fresh (seconds).
+# Historical seasons are cached forever — their stats never change.
+_CURRENT_SEASON_CACHE_TTL = 86400  # 24 hours
+
 
 class MLBStatsFetcher:
     """Fetches data from the official MLB Stats API."""
@@ -24,6 +29,42 @@ class MLBStatsFetcher:
         self.session = requests.Session()
         self.cache_dir = DATA_DIR / "mlb_stats"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
+        # Subdirectories for per-entity stat caches
+        self._pitcher_cache_dir = self.cache_dir / "pitcher_f5_cache"
+        self._team_cache_dir = self.cache_dir / "team_stats_cache"
+        self._pitcher_cache_dir.mkdir(parents=True, exist_ok=True)
+        self._team_cache_dir.mkdir(parents=True, exist_ok=True)
+
+    # ── Stat Cache Helpers ─────────────────────────────────────────────
+
+    def _pitcher_cache_path(self, player_id: int, season: int):
+        return self._pitcher_cache_dir / f"{player_id}_{season}.json"
+
+    def _team_cache_path(self, team_id: int, season: int):
+        return self._team_cache_dir / f"{team_id}_{season}.json"
+
+    def _cache_is_fresh(self, path, season: int) -> bool:
+        """Historical seasons are fresh forever. Current season expires after TTL."""
+        if not path.exists():
+            return False
+        if season < CURRENT_SEASON:
+            return True
+        age = time.time() - path.stat().st_mtime
+        return age < _CURRENT_SEASON_CACHE_TTL
+
+    def _load_json_cache(self, path) -> Optional[dict]:
+        try:
+            with open(path) as f:
+                return json.load(f)
+        except Exception:
+            return None
+
+    def _save_json_cache(self, path, data: dict) -> None:
+        try:
+            with open(path, "w") as f:
+                json.dump(data, f)
+        except Exception as e:
+            logger.warning(f"Failed to write cache {path}: {e}")
 
     def _get(self, endpoint: str, params: dict = None) -> dict:
         """Rate-limited GET request."""
@@ -154,9 +195,19 @@ class MLBStatsFetcher:
         Derive F5-specific stats from game log.
         Returns rolling averages of runs allowed through 5 IP.
 
+        Results are cached to disk per (player_id, season) so that pipeline
+        restarts resume instantly instead of re-fetching all 2000+ pitchers.
+        Historical seasons are cached forever; current season expires after 24h.
+
         Falls back to prior seasons if the requested season has no data
         (covers retired pitchers, injury years, and bullpen conversions).
         """
+        cache_path = self._pitcher_cache_path(player_id, season)
+        if self._cache_is_fresh(cache_path, season):
+            cached = self._load_json_cache(cache_path)
+            if cached is not None:
+                return cached
+
         # Try requested season first, then fall back through prior seasons
         seasons_to_try = [season] + [s for s in range(season - 1, 2020, -1)]
         log = pd.DataFrame()
@@ -168,7 +219,9 @@ class MLBStatsFetcher:
                 break
 
         if log.empty:
-            return {}
+            result = {}
+            self._save_json_cache(cache_path, result)
+            return result
 
         if used_season != season:
             logger.debug(f"Pitcher {player_id}: no {season} data, using {used_season}")
@@ -176,9 +229,11 @@ class MLBStatsFetcher:
         # Filter games where pitcher threw at least 3 innings (captures short starters/openers)
         qualified = log[log["innings_pitched"] >= 3.0].copy()
         if qualified.empty:
-            return {"games": 0, "qualified_starts": 0}
+            result = {"games": 0, "qualified_starts": 0}
+            self._save_json_cache(cache_path, result)
+            return result
 
-        return {
+        result = {
             "games": len(log),
             "qualified_starts": len(qualified),
             "avg_ip": round(qualified["innings_pitched"].mean(), 2),
@@ -202,13 +257,21 @@ class MLBStatsFetcher:
                 qualified.tail(10)["runs"].mean(), 2
             ) if len(qualified) >= 10 else None,
         }
+        self._save_json_cache(cache_path, result)
+        return result
 
     # ── Team Stats ─────────────────────────────────────────────────────
 
     def get_team_stats(
         self, team_id: int, season: int = CURRENT_SEASON
     ) -> dict:
-        """Get team-level batting and pitching stats."""
+        """Get team-level batting and pitching stats. Results cached to disk."""
+        cache_path = self._team_cache_path(team_id, season)
+        if self._cache_is_fresh(cache_path, season):
+            cached = self._load_json_cache(cache_path)
+            if cached is not None:
+                return cached
+
         data = self._get(
             f"teams/{team_id}/stats",
             {"stats": "season", "season": season, "group": "hitting,pitching"},
@@ -219,6 +282,8 @@ class MLBStatsFetcher:
             splits = stat_group.get("splits", [])
             if splits:
                 result[group_name.lower()] = splits[0].get("stat", {})
+
+        self._save_json_cache(cache_path, result)
         return result
 
     def get_team_roster(self, team_id: int, season: int = CURRENT_SEASON) -> pd.DataFrame:
@@ -277,6 +342,15 @@ class MLBStatsFetcher:
             frames.append(df)
 
         combined = pd.concat(frames, ignore_index=True)
+
+        # Deduplicate by game_pk — postponed/rescheduled games can appear
+        # in two date ranges and produce duplicate rows.
+        before = len(combined)
+        combined = combined.drop_duplicates(subset=["game_pk"], keep="last")
+        dupes = before - len(combined)
+        if dupes:
+            logger.warning(f"Dropped {dupes} duplicate game_pk rows from multi-season fetch")
+
         combined.to_parquet(cache_path, index=False)
         logger.info(f"Cached {len(combined)} games to {cache_path}")
         return combined
