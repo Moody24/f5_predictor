@@ -148,7 +148,7 @@ def _handle_ask(question: str) -> None:
             summary_lines.append(
                 f"{info['away_team']} @ {info['home_team']} "
                 f"({info.get('away_starter','?')} vs {info.get('home_starter','?')}): "
-                f"home {ml['home_prob']*100:.0f}%, total {total.get('predicted','?')} runs, {edge_str}"
+                f"home {float(ml['home_prob'])*100:.0f}%, total {total.get('predicted','?')} runs, {edge_str}"
             )
         context = f"Date: {preds.get('date')}\n" + "\n".join(summary_lines)
 

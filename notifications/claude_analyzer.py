@@ -68,17 +68,17 @@ def analyze_predictions(predictions_json: dict, accuracy_context: dict = None) -
 
         # Model divergence: if ZINB and XGBoost disagree by >8% on home win prob,
         # the game is uncertain — flag it so Claude can warn users.
-        zinb_home = ml.get("zinb_home") or ml["home_prob"]
-        xgb_home = ml.get("xgb_home") or ml["home_prob"]
+        zinb_home = float(ml.get("zinb_home") or ml["home_prob"])
+        xgb_home = float(ml.get("xgb_home") or ml["home_prob"])
         divergence = abs(zinb_home - xgb_home)
         divergence_flag = " [MODELS SPLIT]" if divergence > 0.08 else ""
 
         entry = (
             f"{info['away_team']} @ {info['home_team']} "
             f"({info.get('away_starter', '?')} vs {info.get('home_starter', '?')}){divergence_flag}\n"
-            f"  ML: Home {ml['home_prob']*100:.0f}% "
+            f"  ML: Home {float(ml['home_prob'])*100:.0f}% "
             f"[ZINB {zinb_home*100:.0f}% / XGB {xgb_home*100:.0f}%] | "
-            f"Away {ml['away_prob']*100:.0f}%\n"
+            f"Away {float(ml['away_prob'])*100:.0f}%\n"
             f"  Total: {total.get('predicted', '?')} runs\n"
         )
         if edges:
