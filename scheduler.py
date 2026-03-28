@@ -87,7 +87,8 @@ def fetch_incremental():
             stats = mlb.get_pitcher_f5_stats(pid)
             if stats:
                 pitcher_stats[pid] = stats
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Failed to fetch pitcher stats for ID {pid}: {e}")
             continue
 
     team_ids = set()
@@ -98,7 +99,8 @@ def fetch_incremental():
     for tid in team_ids:
         try:
             team_stats[tid] = mlb.get_team_stats(tid)
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Failed to fetch team stats for ID {tid}: {e}")
             continue
 
     # Weather for new games

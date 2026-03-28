@@ -180,7 +180,8 @@ class CombinedF5Predictor:
                         + (1 - actual) * np.log(1 - blended)
                     )
                     count += 1
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"Weight optimization skipped sample {i}: {e}")
                     continue
 
             return total_loss / max(count, 1)
@@ -216,7 +217,8 @@ class CombinedF5Predictor:
                 blended = self.zinb_weight * zinb_home + self.xgb_weight * xgb_home
                 blended_probs.append(float(np.clip(blended, 0.01, 0.99)))
                 actuals.append(float(y_val["home_f5_win"].iloc[i]))
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Calibrator skipped sample {i}: {e}")
                 continue
 
         if len(blended_probs) < 20:

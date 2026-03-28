@@ -137,7 +137,8 @@ def cmd_fetch(args):
                 profile = sc.get_pitcher_f5_profile(pid, season_start, season_end)
                 if profile:
                     statcast_profiles[pid] = profile
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Statcast profile fetch failed for pitcher {pid}: {e}")
                 continue
         if statcast_profiles:
             sc.save_profile_cache(statcast_profiles, seasons[-1])
@@ -460,8 +461,8 @@ def cmd_predict(args):
             statcast_profiles = sc.load_profile_cache(CURRENT_SEASON)
             if not statcast_profiles:
                 statcast_profiles = sc.load_profile_cache(CURRENT_SEASON - 1)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Could not load Statcast profile cache: {e}")
 
     # Fetch pitcher/team stats for today's games
     # For pitchers with < 10 qualified starts this season, blend current stats
@@ -504,16 +505,16 @@ def cmd_predict(args):
                         pitcher_stats[pid] = current
                 else:
                     pitcher_stats[pid] = current
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Failed to fetch pitcher stats for ID {pid}: {e}")
 
         for tid_col in ["away_team_id", "home_team_id"]:
             tid = game.get(tid_col)
             if tid and tid not in team_stats:
                 try:
                     team_stats[int(tid)] = mlb.get_team_stats(int(tid))
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning(f"Failed to fetch team stats for ID {tid}: {e}")
 
     today_base = fe.build_game_features(
         upcoming, pitcher_stats, statcast_profiles, team_stats

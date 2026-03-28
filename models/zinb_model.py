@@ -238,8 +238,8 @@ class ZINBModel:
             total = probs.sum()
             if total > 0:
                 return probs / total
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"ZINB PMF path failed, falling back to NB/Poisson: {e}")
 
         # For NB and Poisson: model.predict(exog) returns the expected count (mu)
         try:
@@ -268,6 +268,7 @@ class ZINBModel:
         X_away: pd.DataFrame,
         X_home: pd.DataFrame,
         n_sims: int = N_SIMULATIONS,
+        seed: Optional[int] = None,
     ) -> dict:
         """
         Monte Carlo simulation of F5 outcomes.
@@ -277,6 +278,9 @@ class ZINBModel:
             - Over/under probabilities for various totals
             - Run line probabilities (+/- 0.5, 1.5)
         """
+        if seed is not None:
+            np.random.seed(seed)
+
         dist = self.predict_distribution(X_away, X_home)
 
         # Sample from distributions
