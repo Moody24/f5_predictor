@@ -119,7 +119,11 @@ def check_yesterday_accuracy(mlb_fetcher, odds_fetcher=None) -> dict:
         closing_home_implied = None
         if odds_fetcher is not None:
             game_time = pred_game.get("game_info", {}).get("commence_time")
-            if game_time:
+            if not game_time:
+                logger.warning(
+                    f"CLV skipped for {away} @ {home}: 'commence_time' missing from game_info"
+                )
+            else:
                 closing = _fetch_closing_odds(odds_fetcher, game_time, home, away)
                 if closing:
                     closing_home_implied = closing.get("closing_home_implied")

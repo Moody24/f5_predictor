@@ -8,12 +8,24 @@ Data sources:
   - MLB Stats API boxscore endpoint (historical lineups)
   - pybaseball batting_stats() (season-level batter stats, bulk)
 """
+import re
 import requests
 import pandas as pd
 import numpy as np
 from typing import Optional
 import logging
 import time
+
+_NAME_SUFFIXES = {"jr", "jr.", "sr", "sr.", "ii", "iii", "iv"}
+
+
+def _last_meaningful_token(full_name: str) -> str:
+    """Return the last name token, skipping generational suffixes (Jr., Sr., II, etc.)."""
+    tokens = full_name.strip().split()
+    for token in reversed(tokens):
+        if token.lower().rstrip(".") not in _NAME_SUFFIXES:
+            return token
+    return tokens[-1] if tokens else full_name
 
 from config.settings import MLB_STATS_BASE, DATA_DIR
 
@@ -138,10 +150,18 @@ class LineupFetcher:
                 bat_side = batter.get("bat_side", "R")
                 name = batter.get("name", "")
 
-                # Try to match by name (pybaseball uses "Name" column)
+                # Try to match by last name, skipping generational suffixes
+                last = _last_meaningful_token(name)
                 match = batter_stats_df[
-                    batter_stats_df["Name"].str.contains(name.split()[-1], case=False, na=False)
+                    batter_stats_df["Name"].str.contains(
+                        re.escape(last), case=False, na=False
+                    )
                 ]
+                # Tiebreak on common last names: prefer exact full-name match
+                if len(match) > 1:
+                    exact = match[match["Name"].str.lower() == name.lower()]
+                    if not exact.empty:
+                        match = exact
                 if match.empty:
                     woba_vals.append(0.320)
                     ops_vals.append(0.720)

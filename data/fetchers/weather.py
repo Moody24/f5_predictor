@@ -111,7 +111,10 @@ class WeatherFetcher:
 
         coords = VENUE_COORDS.get(venue_name)
         if not coords:
-            logger.debug(f"No coordinates for venue: {venue_name}")
+            logger.warning(
+                f"No coordinates for venue '{venue_name}' — using neutral weather. "
+                f"Add to VENUE_COORDS in config/settings.py if this is a real MLB park."
+            )
             return self._default_weather()
 
         lat, lon, tz = coords

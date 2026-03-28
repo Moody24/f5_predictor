@@ -204,9 +204,13 @@ class XGBoostF5Model:
                         ),
                     })
 
-            # Total edge
-            if "over_implied" in market:
-                over_prob = preds.get("over_prob", [0.5])[i] if "over_prob" in preds else 0.5
+            # Total edge — derive over probability from predicted_total via Poisson CDF
+            if "over_implied" in market and "total_line" in market:
+                from scipy.stats import poisson
+                lam = max(float(preds["predicted_total"][i]), 0.01)
+                line = float(market["total_line"])
+                # P(total > line): complement of P(total <= floor(line))
+                over_prob = float(1 - poisson.cdf(int(line), lam))
                 over_edge = (over_prob - market["over_implied"]) * 100
                 if abs(over_edge) >= min_edge_pct:
                     edges.append({
@@ -219,6 +223,11 @@ class XGBoostF5Model:
                             else market.get("under_implied", 0), 3
                         ),
                         "edge_pct": round(abs(over_edge), 1),
+                        "kelly_fraction": self._kelly_criterion(
+                            over_prob if over_edge > 0 else 1 - over_prob,
+                            market["over_implied"] if over_edge > 0
+                            else market.get("under_implied", 0),
+                        ),
                     })
 
         return pd.DataFrame(edges)

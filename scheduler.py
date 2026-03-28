@@ -81,10 +81,15 @@ def fetch_incremental():
     for col in ["away_starter_id", "home_starter_id"]:
         pitcher_ids.update(final[col].dropna().astype(int).unique())
 
+    # Use the most recent season present in the fetched games rather than
+    # the import-time CURRENT_SEASON constant (avoids fetching the wrong year
+    # for year-boundary incremental runs or late-season backfills).
+    most_recent_season = int(pd.to_datetime(final["date"]).dt.year.max())
+
     pitcher_stats = {}
     for pid in pitcher_ids:
         try:
-            stats = mlb.get_pitcher_f5_stats(pid)
+            stats = mlb.get_pitcher_f5_stats(pid, most_recent_season)
             if stats:
                 pitcher_stats[pid] = stats
         except Exception as e:
@@ -133,8 +138,16 @@ def fetch_incremental():
     combined = fe.add_travel_features(combined)
 
     tmp_path = matrix_path.with_suffix(".parquet.tmp")
-    combined.to_parquet(tmp_path, index=False)
-    tmp_path.rename(matrix_path)
+    if tmp_path.exists():
+        logger.warning(f"Removing stale tmp file from previous crashed run: {tmp_path}")
+        tmp_path.unlink()
+    try:
+        combined.to_parquet(tmp_path, index=False)
+        tmp_path.rename(matrix_path)
+    except Exception:
+        if tmp_path.exists():
+            tmp_path.unlink()
+        raise
     n_new = len(new_features)
     logger.info(f"Added {n_new} new games. Total: {len(combined)}")
     return n_new

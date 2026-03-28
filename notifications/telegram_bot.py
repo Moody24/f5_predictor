@@ -53,14 +53,22 @@ _state = {
     "games_today": 0,
     "edges_today": 0,
 }
+_state_lock = threading.Lock()
 
 
 def update_state(last_run: datetime, next_run: datetime, games: int, edges: int) -> None:
     """Called by the scheduler after each run to keep bot state current."""
-    _state["last_run"] = last_run
-    _state["next_run"] = next_run
-    _state["games_today"] = games
-    _state["edges_today"] = edges
+    with _state_lock:
+        _state["last_run"] = last_run
+        _state["next_run"] = next_run
+        _state["games_today"] = games
+        _state["edges_today"] = edges
+
+
+def _get_state() -> dict:
+    """Thread-safe snapshot of current bot state."""
+    with _state_lock:
+        return dict(_state)
 
 
 # ── Command handlers ─────────────────────────────────────────────────────────
@@ -103,14 +111,15 @@ def _handle_edges() -> None:
 
 
 def _handle_status() -> None:
-    last = _state["last_run"]
-    nxt = _state["next_run"]
+    s = _get_state()
+    last = s["last_run"]
+    nxt = s["next_run"]
     lines = [
         "*F5 Predictor — Status*",
         f"Last run: {last.strftime('%Y-%m-%d %H:%M UTC') if last else 'unknown'}",
         f"Next run: {nxt.strftime('%Y-%m-%d %H:%M UTC') if nxt else 'unknown'}",
-        f"Games today: {_state['games_today']}",
-        f"Edges today: {_state['edges_today']}",
+        f"Games today: {s['games_today']}",
+        f"Edges today: {s['edges_today']}",
     ]
     _send("\n".join(lines))
 

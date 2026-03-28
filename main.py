@@ -195,8 +195,16 @@ def cmd_fetch(args):
     # ── Save (atomic write — avoids corrupt file if container is killed mid-write) ──
     out_path = DATA_DIR / "feature_matrix.parquet"
     tmp_path = out_path.with_suffix(".parquet.tmp")
-    feature_df.to_parquet(tmp_path, index=False)
-    tmp_path.rename(out_path)
+    if tmp_path.exists():
+        logger.warning(f"Removing stale tmp file from previous crashed run: {tmp_path}")
+        tmp_path.unlink()
+    try:
+        feature_df.to_parquet(tmp_path, index=False)
+        tmp_path.rename(out_path)
+    except Exception:
+        if tmp_path.exists():
+            tmp_path.unlink()
+        raise
     logger.info(f"Feature matrix saved: {out_path}")
     logger.info(f"Shape: {feature_df.shape}")
     logger.info(f"Columns: {len(feature_df.columns)}")
@@ -534,14 +542,23 @@ def cmd_predict(args):
         combined = fe.add_rolling_features(combined)
         combined = fe.add_travel_features(combined)
         today_pks = set(today_base["game_pk"].values)
-        features = combined[combined["game_pk"].isin(today_pks)].reset_index(drop=True)
+        features = combined[combined["game_pk"].isin(today_pks)].set_index("game_pk")
     else:
-        features = today_base
+        features = today_base.set_index("game_pk")
 
     # ── Generate Predictions ───────────────────────────────────────────
     all_predictions = []
 
-    for idx, (_, game) in enumerate(upcoming.iterrows()):
+    for _, game in upcoming.iterrows():
+        game_pk = game["game_pk"]
+
+        if game_pk not in features.index:
+            logger.warning(
+                f"No features for game_pk {game_pk} "
+                f"({game['away_team']} @ {game['home_team']}) — skipping"
+            )
+            continue
+
         game_info = {
             "away_team": game["away_team"],
             "home_team": game["home_team"],
@@ -553,7 +570,7 @@ def cmd_predict(args):
             "commence_time": str(game.get("game_datetime", game["date"])),
         }
 
-        X_game = features.iloc[[idx]]
+        X_game = features.loc[[game_pk]]
 
         # Drop non-numeric and ID columns — same exclusions as training
         _pred_exclude = {"game_pk", "date", "venue_name", "venue_id", "season",
@@ -562,7 +579,7 @@ def cmd_predict(args):
                          "home_f5_win", "f5_push", "f5_diff"}
         numeric_cols = [
             c for c in X_game.columns
-            if c not in _pred_exclude and X_game[c].dtype in [np.float64, np.int64, float, int]
+            if c not in _pred_exclude and pd.api.types.is_numeric_dtype(X_game[c])
         ]
         X_game = X_game[numeric_cols]
 
