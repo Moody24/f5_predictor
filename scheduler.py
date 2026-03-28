@@ -130,7 +130,9 @@ def fetch_incremental():
     combined = fe.add_rolling_features(combined)
     combined = fe.add_travel_features(combined)
 
-    combined.to_parquet(matrix_path, index=False)
+    tmp_path = matrix_path.with_suffix(".parquet.tmp")
+    combined.to_parquet(tmp_path, index=False)
+    tmp_path.rename(matrix_path)
     n_new = len(new_features)
     logger.info(f"Added {n_new} new games. Total: {len(combined)}")
     return n_new

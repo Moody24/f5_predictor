@@ -189,9 +189,11 @@ def cmd_fetch(args):
     logger.info("Adding travel/fatigue features...")
     feature_df = fe.add_travel_features(feature_df)
 
-    # ── Save ───────────────────────────────────────────────────────────
+    # ── Save (atomic write — avoids corrupt file if container is killed mid-write) ──
     out_path = DATA_DIR / "feature_matrix.parquet"
-    feature_df.to_parquet(out_path, index=False)
+    tmp_path = out_path.with_suffix(".parquet.tmp")
+    feature_df.to_parquet(tmp_path, index=False)
+    tmp_path.rename(out_path)
     logger.info(f"Feature matrix saved: {out_path}")
     logger.info(f"Shape: {feature_df.shape}")
     logger.info(f"Columns: {len(feature_df.columns)}")
