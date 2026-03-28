@@ -144,7 +144,7 @@ class F5Backtester:
             market_prob = market_home_implied if home_edge > 0 else (1 - market_home_implied)
 
             if self.bankroll <= 0:
-                break
+                return
             kelly = self._kelly(model_prob, market_prob)
             bet_size = self.bankroll * kelly * self.kelly_fraction
             bet_size = min(bet_size, self.bankroll * 0.05)
