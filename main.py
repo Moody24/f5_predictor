@@ -23,10 +23,12 @@ import numpy as np
 class _NumpyEncoder(_json.JSONEncoder):
     """Serialize numpy scalars as native Python types instead of strings."""
     def default(self, obj):
-        if isinstance(obj, (np.integer,)):
+        if isinstance(obj, np.integer):
             return int(obj)
-        if isinstance(obj, (np.floating,)):
+        if isinstance(obj, np.floating):
             return float(obj)
+        if isinstance(obj, np.bool_):
+            return bool(obj)
         if isinstance(obj, np.ndarray):
             return obj.tolist()
         return super().default(obj)
@@ -231,7 +233,7 @@ def cmd_train(args):
         "game_pk", "date", "venue_name", "venue_id", "season",
         "away_team_id", "home_team_id",
     } | set(target_cols) | {"f5_push", "f5_diff"}
-    feature_cols = [c for c in df.columns if c not in exclude and df[c].dtype in [np.float64, np.int64, float, int]]
+    feature_cols = [c for c in df.columns if c not in exclude and pd.api.types.is_numeric_dtype(df[c])]
     logger.info(f"Feature columns: {len(feature_cols)}")
 
     # ── Time-Based Split ───────────────────────────────────────────────
@@ -647,7 +649,7 @@ def cmd_backtest(args):
     exclude = {"game_pk", "date", "venue_name", "season",
                "away_f5_runs", "home_f5_runs", "total_f5_runs",
                "home_f5_win", "f5_push", "f5_diff"}
-    feature_cols = [c for c in df.columns if c not in exclude and df[c].dtype in [np.float64, np.int64, float, int]]
+    feature_cols = [c for c in df.columns if c not in exclude and pd.api.types.is_numeric_dtype(df[c])]
 
     backtester = F5Backtester(
         initial_bankroll=args.bankroll,

@@ -128,7 +128,14 @@ class CombinedF5Predictor:
         )
 
         # ── Optimize Ensemble Weights ──────────────────────────────────
-        if X_val is not None:
+        # Guard: need at least some non-push games to compute log-loss
+        val_has_signal = (
+            X_val is not None
+            and y_val is not None
+            and len(y_val) > 0
+            and y_val["home_f5_win"].nunique() > 1
+        )
+        if val_has_signal:
             self._optimize_weights(X_val, y_val, away_feature_cols, home_feature_cols)
             self._fit_calibrator(X_val, y_val, away_feature_cols, home_feature_cols)
 
@@ -270,19 +277,26 @@ class CombinedF5Predictor:
         w_x = self.xgb_weight
 
         # ── Moneyline ─────────────────────────────────────────────────
-        zinb_home_pct = zinb_sim["moneyline"]["home_win_pct"] / 100
-        xgb_home_prob = xgb_pred["home_win_prob"][0]
+        zinb_home_pct = float(zinb_sim["moneyline"]["home_win_pct"]) / 100
+        xgb_home_arr = xgb_pred["home_win_prob"]
+        xgb_home_prob = float(xgb_home_arr[0]) if len(xgb_home_arr) > 0 else 0.5
+        xgb_home_prob = max(0.0, min(1.0, xgb_home_prob))
         ensemble_home = w_z * zinb_home_pct + w_x * xgb_home_prob
         ensemble_away = 1 - ensemble_home
 
         # ── Total ──────────────────────────────────────────────────────
-        zinb_total = zinb_sim["total_mean"]
-        xgb_total = xgb_pred["predicted_total"][0]
+        zinb_total = float(zinb_sim["total_mean"])
+        xgb_total_arr = xgb_pred["predicted_total"]
+        xgb_total = float(xgb_total_arr[0]) if len(xgb_total_arr) > 0 else zinb_total
         ensemble_total = w_z * zinb_total + w_x * xgb_total
 
         # ── Per-side runs ──────────────────────────────────────────────
-        ensemble_away_runs = w_z * zinb_sim["away_mean"] + w_x * xgb_pred["est_away_runs"][0]
-        ensemble_home_runs = w_z * zinb_sim["home_mean"] + w_x * xgb_pred["est_home_runs"][0]
+        xgb_away_arr = xgb_pred["est_away_runs"]
+        xgb_home_arr2 = xgb_pred["est_home_runs"]
+        xgb_away_runs = float(xgb_away_arr[0]) if len(xgb_away_arr) > 0 else float(zinb_sim["away_mean"])
+        xgb_home_runs = float(xgb_home_arr2[0]) if len(xgb_home_arr2) > 0 else float(zinb_sim["home_mean"])
+        ensemble_away_runs = w_z * float(zinb_sim["away_mean"]) + w_x * xgb_away_runs
+        ensemble_home_runs = w_z * float(zinb_sim["home_mean"]) + w_x * xgb_home_runs
 
         return {
             "moneyline": {

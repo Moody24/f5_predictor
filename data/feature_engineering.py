@@ -247,7 +247,7 @@ class FeatureEngineer:
             row.update(ump_feats)
 
             # ── Targets (if available) ─────────────────────────────────
-            if game.get("away_f5_runs") is not None:
+            if game.get("away_f5_runs") is not None and game.get("home_f5_runs") is not None:
                 row["away_f5_runs"] = game["away_f5_runs"]
                 row["home_f5_runs"] = game["home_f5_runs"]
                 row["total_f5_runs"] = game["total_f5_runs"]

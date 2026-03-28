@@ -157,7 +157,7 @@ def should_retrain(force: bool = False) -> bool:
     train_date = latest.name[:10]  # YYYY-MM-DD from directory name
 
     df = pd.read_parquet(matrix_path, columns=["date"])
-    new_since = df[df["date"].astype(str) > train_date]
+    new_since = df[pd.to_datetime(df["date"]) > pd.to_datetime(train_date)]
     n_new = len(new_since)
 
     logger.info(f"Games since last train ({train_date}): {n_new}")
