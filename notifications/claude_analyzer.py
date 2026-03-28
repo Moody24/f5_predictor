@@ -68,8 +68,8 @@ def analyze_predictions(predictions_json: dict, accuracy_context: dict = None) -
 
         # Model divergence: if ZINB and XGBoost disagree by >8% on home win prob,
         # the game is uncertain — flag it so Claude can warn users.
-        zinb_home = ml.get("zinb_home", ml["home_prob"])
-        xgb_home = ml.get("xgb_home", ml["home_prob"])
+        zinb_home = ml.get("zinb_home") or ml["home_prob"]
+        xgb_home = ml.get("xgb_home") or ml["home_prob"]
         divergence = abs(zinb_home - xgb_home)
         divergence_flag = " [MODELS SPLIT]" if divergence > 0.08 else ""
 
@@ -128,7 +128,7 @@ def analyze_today(accuracy_context: dict = None) -> str:
     return analyze_predictions(predictions, accuracy_context=accuracy_context)
 
 
-def _fallback_summary(predictions_json: dict) -> str:
+def _fallback_summary(predictions_json: dict, accuracy_context: dict = None) -> str:
     """Generate a simple summary without Claude API."""
     games = predictions_json.get("games", [])
     if not games:
