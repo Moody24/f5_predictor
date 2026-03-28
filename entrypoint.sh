@@ -33,16 +33,11 @@ if [ "$STORED_VERSION" != "$PIPELINE_VERSION" ] && [ -f "$FEATURE_MATRIX" ]; the
     rm -f "$FEATURE_MATRIX"
 fi
 
-# Validate feature matrix row count. Use || to handle pyarrow crashes on corrupt files.
-MATRIX_ROWS=0
+# Validate feature matrix by file size (>1MB = valid).
+# Avoids pyarrow/column-name issues that silently return 0 rows.
+MATRIX_SIZE=0
 if [ -f "$FEATURE_MATRIX" ]; then
-    MATRIX_ROWS=$(python -c "
-import pandas as pd, sys
-try:
-    print(len(pd.read_parquet('$FEATURE_MATRIX', columns=['game_pk'])))
-except Exception:
-    print(0)
-" 2>/dev/null) || MATRIX_ROWS=0
+    MATRIX_SIZE=$(stat -c%s "$FEATURE_MATRIX" 2>/dev/null || stat -f%z "$FEATURE_MATRIX" 2>/dev/null || echo 0)
 fi
 
 NEED_REBUILD=false
@@ -51,9 +46,9 @@ REBUILD_REASON=""
 if [ ! -f "$FEATURE_MATRIX" ] || [ -z "$(ls -A $MODEL_DIR 2>/dev/null)" ]; then
     NEED_REBUILD=true
     REBUILD_REASON="No data/models found"
-elif [ "$MATRIX_ROWS" -eq 0 ]; then
+elif [ "$MATRIX_SIZE" -lt 1048576 ]; then
     NEED_REBUILD=true
-    REBUILD_REASON="Feature matrix invalid (rows=$MATRIX_ROWS)"
+    REBUILD_REASON="Feature matrix too small (${MATRIX_SIZE} bytes — likely corrupt)"
     rm -f "$FEATURE_MATRIX"
 fi
 
@@ -68,7 +63,7 @@ if [ "$NEED_REBUILD" = true ]; then
         echo "Initial pipeline complete."
     fi
 else
-    echo "Data and models found ($MATRIX_ROWS rows, $STORED_VERSION). Skipping initial pipeline."
+    echo "Data and models found (${MATRIX_SIZE} bytes, $STORED_VERSION). Skipping initial pipeline."
 fi
 
 # Kill the standalone bot process — bot_runner.py starts its own thread
