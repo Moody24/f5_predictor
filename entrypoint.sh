@@ -59,15 +59,5 @@ else
     echo "Data and models found ($MATRIX_ROWS rows, $STORED_VERSION). Skipping initial pipeline."
 fi
 
-echo "Starting daily scheduler loop..."
-while true; do
-    python scheduler.py
-    EXIT_CODE=$?
-    if [ $EXIT_CODE -ne 0 ]; then
-        echo "Scheduler run failed (exit=$EXIT_CODE). Retrying in 1 hour..."
-        sleep 3600
-    else
-        echo "Scheduler run complete. Sleeping 22h until next run..."
-        sleep 79200
-    fi
-done
+echo "Starting bot runner (scheduler + Telegram bot)..."
+python bot_runner.py
