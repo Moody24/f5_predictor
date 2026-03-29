@@ -124,24 +124,65 @@ def _handle_edges() -> None:
     with open(pred_path) as f:
         preds = json.load(f)
 
+    now_utc = datetime.utcnow()
+
     all_edges = []
     for game in preds.get("games", []):
         info = game["game_info"]
         matchup = f"{info['away_team']} @ {info['home_team']}"
+        commence_time = info.get("commence_time")
+
+        # Parse game start time and check if already started
+        game_started = False
+        time_label = ""
+        if commence_time:
+            try:
+                from datetime import timezone
+                gt = datetime.fromisoformat(commence_time.replace("Z", "+00:00"))
+                gt_naive = gt.replace(tzinfo=None)
+                mins_until = int((gt_naive - now_utc).total_seconds() / 60)
+                if mins_until <= 0:
+                    game_started = True
+                    time_label = "STARTED"
+                elif mins_until < 60:
+                    time_label = f"in {mins_until}m"
+                else:
+                    hrs = mins_until // 60
+                    mins = mins_until % 60
+                    time_label = f"in {hrs}h{mins:02d}m" if mins else f"in {hrs}h"
+            except Exception:
+                pass
+
         for e in game.get("edges", []):
-            all_edges.append((matchup, e))
+            all_edges.append((matchup, time_label, game_started, e))
 
     if not all_edges:
         _send("No actionable edges found today. 0 bets flagged.")
         return
 
+    # Sort: active games first (by edge%), then locked games
+    active = [(m, tl, gs, e) for m, tl, gs, e in all_edges if not gs]
+    locked = [(m, tl, gs, e) for m, tl, gs, e in all_edges if gs]
+    active.sort(key=lambda x: x[3].get("edge_pct", 0), reverse=True)
+
     lines = [f"*F5 Edges — {preds.get('date', 'Today')}*", ""]
-    for matchup, e in sorted(all_edges, key=lambda x: x[1].get("edge_pct", 0), reverse=True):
+
+    for matchup, time_label, _, e in active:
         kelly = e.get("kelly_half", 0) * 100
+        time_str = f" ⏰ {time_label}" if time_label else ""
         lines.append(
-            f"[{e['confidence']}] *{matchup}*\n"
+            f"[{e['confidence']}] *{matchup}*{time_str}\n"
             f"  {e['market']} → {e['side']} | Edge: +{e['edge_pct']:.1f}% | Kelly: {kelly:.1f}%"
         )
+
+    if locked:
+        lines += ["", "🔒 *Already started — for reference only:*"]
+        for matchup, _, _, e in locked:
+            kelly = e.get("kelly_half", 0) * 100
+            lines.append(
+                f"~~[{e['confidence']}] {matchup}~~\n"
+                f"  {e['market']} → {e['side']} | Edge: +{e['edge_pct']:.1f}%"
+            )
 
     _send("\n".join(lines))
 

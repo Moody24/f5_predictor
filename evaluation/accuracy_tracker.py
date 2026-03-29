@@ -61,7 +61,9 @@ def _fetch_closing_odds(odds_fetcher, game_time_iso: str, home_team: str, away_t
 
 def check_yesterday_accuracy(mlb_fetcher, odds_fetcher=None) -> dict:
     """
-    Compare yesterday's predictions to actual outcomes and compute CLV.
+    Compare recent predictions to actual outcomes and compute CLV.
+    Checks the last 7 days and backfills any dates not yet in the accuracy log,
+    so gaps from downtime are automatically filled on the next run.
 
     Args:
         mlb_fetcher: MLBStatsFetcher instance to get actual results
@@ -69,14 +71,63 @@ def check_yesterday_accuracy(mlb_fetcher, odds_fetcher=None) -> dict:
                       Pass None to skip CLV computation.
 
     Returns:
-        Dict with accuracy metrics, or empty dict if no predictions found
+        Dict with accuracy metrics for yesterday (most recent), or empty dict
     """
+    # Load existing log to know which dates are already tracked
+    log_path = ACCURACY_DIR / "daily_accuracy.json"
+    running_log = []
+    if log_path.exists():
+        try:
+            with open(log_path) as f:
+                running_log = json.load(f)
+        except Exception:
+            running_log = []
+    already_tracked = {entry["date"] for entry in running_log}
+
+    # Check last 7 days, skip today (games not finished) and already-tracked dates
+    today = datetime.now().strftime("%Y-%m-%d")
+    dates_to_check = []
+    for days_ago in range(1, 8):
+        d = (datetime.now() - timedelta(days=days_ago)).strftime("%Y-%m-%d")
+        pred_path = PREDICTIONS_DIR / f"{d}.json"
+        if pred_path.exists() and d not in already_tracked:
+            dates_to_check.append(d)
+
+    if not dates_to_check:
+        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        logger.info(f"No new prediction dates to evaluate (checked last 7 days)")
+        # Return yesterday's entry if it exists
+        for entry in reversed(running_log):
+            if entry["date"] == yesterday:
+                return entry
+        return {}
+
+    latest_summary = {}
+    for date_to_check in sorted(dates_to_check):
+        summary = _check_date_accuracy(date_to_check, mlb_fetcher, odds_fetcher, running_log)
+        if summary:
+            running_log.append(summary)
+            latest_summary = summary
+            with open(log_path, "w") as f:
+                json.dump(running_log, f, indent=2)
+            logger.info(f"Backfilled accuracy for {date_to_check}: ML {summary.get('ml_accuracy')}%")
+
     yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-    pred_path = PREDICTIONS_DIR / f"{yesterday}.json"
+    for entry in reversed(running_log):
+        if entry["date"] == yesterday:
+            return entry
+    return latest_summary
+
+
+def _check_date_accuracy(date: str, mlb_fetcher, odds_fetcher, running_log: list) -> dict:
+    """Check accuracy for a single date. Returns summary dict or {}."""
+    pred_path = PREDICTIONS_DIR / f"{date}.json"
 
     if not pred_path.exists():
-        logger.info(f"No predictions found for {yesterday}")
+        logger.info(f"No predictions found for {date}")
         return {}
+
+    yesterday = date
 
     with open(pred_path) as f:
         predictions = json.load(f)
@@ -236,18 +287,7 @@ def check_yesterday_accuracy(mlb_fetcher, odds_fetcher=None) -> dict:
                 summary[f"{conf.lower()}_total"] = int(len(sub))
                 summary[f"{conf.lower()}_roi"] = round(sub["profit"].sum(), 3)
 
-    # Append to running log
-    log_path = ACCURACY_DIR / "daily_accuracy.json"
-    running_log = []
-    if log_path.exists():
-        with open(log_path) as f:
-            running_log = json.load(f)
-
-    running_log.append(summary)
-    with open(log_path, "w") as f:
-        json.dump(running_log, f, indent=2)
-
-    logger.info(f"Accuracy for {yesterday}: ML {summary['ml_accuracy']}%, "
+    logger.info(f"Accuracy for {date}: ML {summary['ml_accuracy']}%, "
                 f"Avg total error: {summary['avg_total_error']}")
 
     return summary
