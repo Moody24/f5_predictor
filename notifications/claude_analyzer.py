@@ -89,10 +89,17 @@ def analyze_predictions(predictions_json: dict, accuracy_context: dict = None) -
                 )
         games_summary.append(entry)
 
+    odds_warning = (
+        "\n⚠️ NOTE: Live odds were unavailable — edge calculations are skipped. "
+        "Model probabilities are still valid for direction but no Kelly sizing is possible.\n"
+        if not predictions_json.get("odds_available", True) else ""
+    )
+
     prompt = f"""You are an expert MLB F5 (first 5 innings) betting analyst. Analyze today's predictions and give a sharp daily briefing.
 
 Date: {predictions_json.get('date', 'today')}
 Games: {predictions_json.get('n_games', 0)}
+{odds_warning}
 
 {accuracy_section}Predictions (MODELS SPLIT = ZINB and XGBoost disagree by >8%, treat as uncertain):
 {chr(10).join(games_summary)}
@@ -147,8 +154,10 @@ def _fallback_summary(predictions_json: dict, accuracy_context: dict = None) -> 
         f"F5 Predictions — {predictions_json.get('date', 'Today')}",
         f"Games analyzed: {len(games)}",
         f"Edges found: {len(all_edges)}",
-        "",
     ]
+    if not predictions_json.get("odds_available", True):
+        lines.append("⚠️ Live odds unavailable — no edge calculations (model direction still valid)")
+    lines.append("")
 
     if all_edges:
         lines.append("Top Edges:")

@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 import logging
 
-from config.settings import MIN_EDGE_PCT, MIN_KELLY_FRACTION, BANKROLL
+from config.settings import MIN_EDGE_PCT, KELLY_FRACTION, BANKROLL, kelly_criterion
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +27,7 @@ class F5Backtester:
         self,
         initial_bankroll: float = BANKROLL,
         min_edge: float = MIN_EDGE_PCT,
-        kelly_fraction: float = MIN_KELLY_FRACTION,
+        kelly_fraction: float = KELLY_FRACTION,
         retrain_every_n_days: int = 14,
     ):
         self.bankroll = initial_bankroll
@@ -56,34 +56,52 @@ class F5Backtester:
             target_cols: Dict mapping target names to column names
                          e.g. {"away_f5_runs": "away_f5_runs", ...}
             predictor_class: CombinedF5Predictor class
-            train_start_idx: Minimum training set size
-            test_window: Days per test window
+            train_start_idx: Minimum rows in initial training set
+            test_window: Calendar days per test window (not row count)
 
         Returns:
             Dict with backtest results, metrics, and bet log
         """
-        dates = full_data["date"].unique()
-        dates.sort()
+        if len(full_data) <= train_start_idx:
+            logger.warning(f"Not enough data for backtesting ({len(full_data)} rows, need >{train_start_idx})")
+            return self._compile_results()
+
+        full_data = full_data.copy()
+        full_data["_date_dt"] = pd.to_datetime(full_data["date"])
+
+        # Use the date of the train_start_idx-th row as the initial test start
+        initial_cutoff = full_data["_date_dt"].iloc[train_start_idx]
+        all_dates = sorted(full_data["_date_dt"].unique())
+        test_dates = [d for d in all_dates if d >= initial_cutoff]
+
+        if not test_dates:
+            return self._compile_results()
 
         current_model = None
         last_train_date = None
+        step = timedelta(days=test_window)
+        window_start = test_dates[0]
+        final_date = test_dates[-1]
 
-        for i in range(train_start_idx, len(full_data), test_window):
-            window_end = min(i + test_window, len(full_data))
-            train = full_data.iloc[:i]
-            test = full_data.iloc[i:window_end]
+        while window_start <= final_date:
+            window_end = window_start + step
+            train_mask = full_data["_date_dt"] < window_start
+            test_mask = (full_data["_date_dt"] >= window_start) & (full_data["_date_dt"] < window_end)
+
+            train = full_data[train_mask]
+            test = full_data[test_mask]
 
             if test.empty:
-                break
+                window_start += step
+                continue
 
-            current_date = test["date"].iloc[0]
+            current_date = str(test["date"].iloc[0])
 
             # ── Retrain Check ──────────────────────────────────────────
             should_retrain = (
                 current_model is None
                 or last_train_date is None
-                or (pd.to_datetime(current_date) - pd.to_datetime(last_train_date)).days
-                >= self.retrain_days
+                or (window_start - pd.to_datetime(last_train_date)).days >= self.retrain_days
             )
 
             if should_retrain:
@@ -98,6 +116,7 @@ class F5Backtester:
                     last_train_date = current_date
                 except Exception as e:
                     logger.warning(f"Training failed at {current_date}: {e}")
+                    window_start += step
                     continue
 
             # ── Predict Test Window ────────────────────────────────────
@@ -107,7 +126,7 @@ class F5Backtester:
 
                 try:
                     prediction = current_model.predict_game(X_game)
-                except Exception as e:
+                except Exception:
                     continue
 
                 # ── Simulate Bets ──────────────────────────────────────
@@ -120,6 +139,9 @@ class F5Backtester:
                 "cumulative_bets": len(self.bet_log),
             })
 
+            window_start += step
+
+        full_data.drop(columns=["_date_dt"], inplace=True)
         return self._compile_results()
 
     # Historical F5 home-win rate used as naive market baseline
@@ -145,7 +167,7 @@ class F5Backtester:
 
             if self.bankroll <= 0:
                 return
-            kelly = self._kelly(model_prob, market_prob)
+            kelly = kelly_criterion(model_prob, market_prob)
             bet_size = self.bankroll * kelly * self.kelly_fraction
             bet_size = min(bet_size, self.bankroll * 0.05)
 
@@ -184,7 +206,7 @@ class F5Backtester:
                 if abs(over_edge) >= self.min_edge:
                     bet_side = "Over" if over_edge > 0 else "Under"
                     model_prob = over_prob if over_edge > 0 else under_prob
-                    kelly = self._kelly(model_prob, 0.50)
+                    kelly = kelly_criterion(model_prob, 0.50)
                     bet_size = self.bankroll * kelly * self.kelly_fraction
                     bet_size = min(bet_size, self.bankroll * 0.05)
 
@@ -209,16 +231,6 @@ class F5Backtester:
                         "payout": round(payout, 2),
                         "bankroll_after": round(self.bankroll, 2),
                     })
-
-    @staticmethod
-    def _kelly(model_prob: float, market_implied: float) -> float:
-        """Full Kelly criterion."""
-        if market_implied <= 0 or market_implied >= 1:
-            return 0.0
-        b = (1 / market_implied) - 1
-        p = model_prob
-        q = 1 - p
-        return max((b * p - q) / b, 0)
 
     def _compile_results(self) -> dict:
         """Compile backtest results into summary."""

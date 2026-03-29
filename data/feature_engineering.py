@@ -281,6 +281,10 @@ class FeatureEngineer:
             # Unknown starter — use league average defaults
             return self._default_pitcher_features(prefix)
 
+        # Start with league-average defaults — single source of truth.
+        # Any field not present in pstats/sprofile keeps its default value.
+        features = self._default_pitcher_features(prefix)
+
         # MLB Stats API features — try (pid, game_season) first (prior-season keyed dict),
         # then fall back to plain pid key (prediction-time format).
         pstats = (
@@ -290,36 +294,56 @@ class FeatureEngineer:
         ) or pitcher_stats.get(pitcher_id, {})
 
         # Rookies, TJ returnees, and openers with no prior-season data get pstats={}.
-        # Use explicit league-average defaults so they're not misrepresented as zeros
-        # (zero ERA / zero runs would look like an elite ace to the model).
-        features[f"{prefix}starter_era_season"] = float(pstats.get("era", 4.50))
-        features[f"{prefix}starter_whip_season"] = float(pstats.get("whip", 1.30))
-        features[f"{prefix}starter_kbb_ratio"] = float(pstats.get("k_bb_ratio", 2.5))
-        features[f"{prefix}starter_avg_ip"] = float(pstats.get("avg_ip", 5.0))
-        features[f"{prefix}starter_pct_5ip_plus"] = float(pstats.get("pct_5ip_plus", 60.0))
-        features[f"{prefix}starter_avg_pitches"] = float(pstats.get("avg_pitches", 85.0))
-        features[f"{prefix}starter_avg_runs_per_start"] = float(pstats.get("avg_runs_per_start", 3.5))
-        # last5/last10 previously returned None (no default) → became 0 after fillna.
-        # 0 runs = elite ace signal. Default to league average instead.
-        features[f"{prefix}starter_last5_runs"] = float(pstats.get("last5_avg_runs") or 3.5)
-        features[f"{prefix}starter_last10_runs"] = float(pstats.get("last10_avg_runs") or 3.5)
+        # Override only the fields actually present in pstats so a missing stat
+        # stays at league average rather than becoming 0.
+        if pstats:
+            if pstats.get("era") is not None:
+                features[f"{prefix}starter_era_season"] = float(pstats["era"])
+            if pstats.get("whip") is not None:
+                features[f"{prefix}starter_whip_season"] = float(pstats["whip"])
+            if pstats.get("k_bb_ratio") is not None:
+                features[f"{prefix}starter_kbb_ratio"] = float(pstats["k_bb_ratio"])
+            if pstats.get("avg_ip") is not None:
+                features[f"{prefix}starter_avg_ip"] = float(pstats["avg_ip"])
+            if pstats.get("pct_5ip_plus") is not None:
+                features[f"{prefix}starter_pct_5ip_plus"] = float(pstats["pct_5ip_plus"])
+            if pstats.get("avg_pitches") is not None:
+                features[f"{prefix}starter_avg_pitches"] = float(pstats["avg_pitches"])
+            if pstats.get("avg_runs_per_start") is not None:
+                features[f"{prefix}starter_avg_runs_per_start"] = float(pstats["avg_runs_per_start"])
+            # last5/last10 — guard against None explicitly (None → 0 after fillna = elite ace signal)
+            if pstats.get("last5_avg_runs") is not None:
+                features[f"{prefix}starter_last5_runs"] = float(pstats["last5_avg_runs"])
+            if pstats.get("last10_avg_runs") is not None:
+                features[f"{prefix}starter_last10_runs"] = float(pstats["last10_avg_runs"])
 
-        # Statcast features
+        # Statcast features — override defaults where profile data exists
         sprofile = statcast_profiles.get(pitcher_id, {})
-        features[f"{prefix}starter_whiff_rate"] = sprofile.get("whiff_rate", 24.0)
-        features[f"{prefix}starter_csw_pct"] = sprofile.get("csw_pct", 29.0)
-        features[f"{prefix}starter_avg_ev_against"] = sprofile.get("avg_exit_velo_against", 88.5)
-        features[f"{prefix}starter_barrel_rate"] = sprofile.get("barrel_rate_against", 7.0)
-        features[f"{prefix}starter_hard_hit_rate"] = sprofile.get("hard_hit_rate_against", 35.0)
-        features[f"{prefix}starter_xwoba_against"] = sprofile.get("xwOBA_against", 0.320)
-        features[f"{prefix}starter_avg_fb_velo"] = sprofile.get("avg_fastball_velo", 93.0)
-        features[f"{prefix}starter_n_pitch_types"] = sprofile.get("n_pitch_types", 4)
-
-        # Handedness splits
-        features[f"{prefix}starter_vs_r_xwoba"] = sprofile.get("vs_R_xwOBA", 0.320)
-        features[f"{prefix}starter_vs_l_xwoba"] = sprofile.get("vs_L_xwOBA", 0.320)
-        features[f"{prefix}starter_vs_r_whiff"] = sprofile.get("vs_R_whiff_rate", 24.0)
-        features[f"{prefix}starter_vs_l_whiff"] = sprofile.get("vs_L_whiff_rate", 24.0)
+        if sprofile:
+            if sprofile.get("whiff_rate") is not None:
+                features[f"{prefix}starter_whiff_rate"] = sprofile["whiff_rate"]
+            if sprofile.get("csw_pct") is not None:
+                features[f"{prefix}starter_csw_pct"] = sprofile["csw_pct"]
+            if sprofile.get("avg_exit_velo_against") is not None:
+                features[f"{prefix}starter_avg_ev_against"] = sprofile["avg_exit_velo_against"]
+            if sprofile.get("barrel_rate_against") is not None:
+                features[f"{prefix}starter_barrel_rate"] = sprofile["barrel_rate_against"]
+            if sprofile.get("hard_hit_rate_against") is not None:
+                features[f"{prefix}starter_hard_hit_rate"] = sprofile["hard_hit_rate_against"]
+            if sprofile.get("xwOBA_against") is not None:
+                features[f"{prefix}starter_xwoba_against"] = sprofile["xwOBA_against"]
+            if sprofile.get("avg_fastball_velo") is not None:
+                features[f"{prefix}starter_avg_fb_velo"] = sprofile["avg_fastball_velo"]
+            if sprofile.get("n_pitch_types") is not None:
+                features[f"{prefix}starter_n_pitch_types"] = sprofile["n_pitch_types"]
+            if sprofile.get("vs_R_xwOBA") is not None:
+                features[f"{prefix}starter_vs_r_xwoba"] = sprofile["vs_R_xwOBA"]
+            if sprofile.get("vs_L_xwOBA") is not None:
+                features[f"{prefix}starter_vs_l_xwoba"] = sprofile["vs_L_xwOBA"]
+            if sprofile.get("vs_R_whiff_rate") is not None:
+                features[f"{prefix}starter_vs_r_whiff"] = sprofile["vs_R_whiff_rate"]
+            if sprofile.get("vs_L_whiff_rate") is not None:
+                features[f"{prefix}starter_vs_l_whiff"] = sprofile["vs_L_whiff_rate"]
 
         return features
 

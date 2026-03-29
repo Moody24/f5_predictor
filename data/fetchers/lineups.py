@@ -248,6 +248,11 @@ class LineupFetcher:
                     exact = match[match["Name"].str.lower() == name.lower()]
                     if not exact.empty:
                         match = exact
+                    else:
+                        logger.debug(
+                            f"Ambiguous batter name '{name}' matched {len(match)} players "
+                            f"({', '.join(match['Name'].tolist())}) — using first"
+                        )
 
                 season_woba = 0.320
                 if match.empty:

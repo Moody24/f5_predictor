@@ -25,7 +25,8 @@ from models.zinb_model import ZINBModel
 from models.xgboost_model import XGBoostF5Model
 from data.fetchers.odds_api import OddsApiFetcher
 from config.settings import (
-    N_SIMULATIONS, MIN_EDGE_PCT, MIN_KELLY_FRACTION,
+    N_SIMULATIONS, MIN_EDGE_PCT, KELLY_FRACTION,
+    kelly_criterion,
     create_model_version_dir, get_latest_model_dir,
 )
 
@@ -422,7 +423,7 @@ class CombinedF5Predictor:
     ) -> dict:
         """Build standardized edge dict with Kelly sizing."""
         edge_pct = (model_prob - market_prob) * 100
-        kelly = self._kelly(model_prob, market_prob)
+        kelly = kelly_criterion(model_prob, market_prob)
 
         return {
             "market": market,
@@ -432,20 +433,10 @@ class CombinedF5Predictor:
             "edge_pct": round(edge_pct, 1),
             "market_odds_american": market_odds,
             "kelly_full": round(kelly, 3),
-            "kelly_half": round(kelly * 0.5, 3),
-            "kelly_quarter": round(kelly * 0.25, 3),
+            "kelly_half": round(kelly * KELLY_FRACTION, 3),
+            "kelly_quarter": round(kelly * KELLY_FRACTION * 0.5, 3),
             "confidence": self._edge_confidence(edge_pct),
         }
-
-    @staticmethod
-    def _kelly(model_prob: float, market_implied: float) -> float:
-        """Full Kelly criterion."""
-        if market_implied <= 0 or market_implied >= 1:
-            return 0.0
-        b = (1 / market_implied) - 1
-        p = model_prob
-        q = 1 - p
-        return max((b * p - q) / b, 0)
 
     @staticmethod
     def _edge_confidence(edge_pct: float) -> str:

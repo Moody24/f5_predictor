@@ -53,7 +53,7 @@ ODDS_API_KEY = os.getenv("ODDS_API_KEY", "")
 
 # ── MLB Stats API ──────────────────────────────────────────────────────
 MLB_STATS_BASE = "https://statsapi.mlb.com/api/v1"
-CURRENT_SEASON = 2025
+CURRENT_SEASON = 2026
 
 # ── Feature Engineering ────────────────────────────────────────────────
 # Rolling windows for pitcher/team stats
@@ -139,9 +139,22 @@ ZINB_DISP_FLAG = True  # parameterize dispersion with covariates
 N_SIMULATIONS = 10_000  # Monte Carlo sims for probability estimation
 
 # ── Betting Thresholds ─────────────────────────────────────────────────
-MIN_EDGE_PCT = 3.0       # minimum edge % to flag a bet
-MIN_KELLY_FRACTION = 0.5 # fraction of full Kelly to use
-BANKROLL = 1000.0        # default bankroll for Kelly sizing
+MIN_EDGE_PCT = 3.0        # minimum edge % to flag a bet
+KELLY_FRACTION = 0.5      # fraction of full Kelly to use (half-Kelly)
+BANKROLL = 1000.0         # default bankroll for Kelly sizing
+
+
+def kelly_criterion(model_prob: float, market_implied: float) -> float:
+    """
+    Full Kelly criterion: Kelly% = (bp - q) / b
+    where b = decimal odds - 1, p = model prob, q = 1-p.
+    Returns 0 for invalid inputs. Callers scale by KELLY_FRACTION as needed.
+    """
+    if market_implied <= 0 or market_implied >= 1:
+        return 0.0
+    b = (1 / market_implied) - 1
+    kelly = (b * model_prob - (1 - model_prob)) / b
+    return max(kelly, 0.0)
 
 # ── Odds API ───────────────────────────────────────────────────────────
 ODDS_API_BASE = "https://api.the-odds-api.com/v4"

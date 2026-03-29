@@ -265,15 +265,17 @@ def cmd_train(args):
     # ── Impute Missing Features ────────────────────────────────────────
     X_train = train[feature_cols].copy()
     X_val = val[feature_cols].copy()
+    imputation_medians = {}
     for col in feature_cols:
         median = X_train[col].median()
+        imputation_medians[col] = float(median)
         X_train[col] = X_train[col].fillna(median)
         X_val[col] = X_val[col].fillna(median)
 
     X_train_no_push = train_no_push[feature_cols].copy()
     X_val_no_push = val_no_push[feature_cols].copy()
     for col in feature_cols:
-        median = X_train[col].median()  # use same median from full train set
+        median = imputation_medians[col]  # use same medians captured above
         X_train_no_push[col] = X_train_no_push[col].fillna(median)
         X_val_no_push[col] = X_val_no_push[col].fillna(median)
 
@@ -361,7 +363,13 @@ def cmd_train(args):
 
     # ── Save (versioned) ────────────────────────────────────────────────
     version_dir = predictor.save("f5_combined", diagnostics=diagnostics)
-    logger.info(f"Models saved to {version_dir}")
+
+    # Persist imputation medians alongside the model so cmd_predict can apply
+    # the exact same fills used during training — prevents train/inference skew.
+    medians_path = version_dir / "imputation_medians.json"
+    with open(medians_path, "w") as _f:
+        _json.dump(imputation_medians, _f, indent=2)
+    logger.info(f"Models saved to {version_dir} (imputation medians: {len(imputation_medians)} features)")
 
 
 def _match_odds_to_game(
@@ -599,6 +607,22 @@ def cmd_predict(args):
     else:
         features = today_base.set_index("game_pk")
 
+    # Apply training-time imputation medians to fill any NaN in today's features.
+    # This ensures inference uses the same fill values as training — without this,
+    # missing features default to NaN which corrupts the model's predictions.
+    try:
+        from config.settings import get_latest_model_dir as _get_model_dir
+        _medians_path = _get_model_dir() / "imputation_medians.json"
+        if _medians_path.exists():
+            with open(_medians_path) as _mf:
+                _imputation_medians = _json.load(_mf)
+            for _col, _median_val in _imputation_medians.items():
+                if _col in features.columns:
+                    features[_col] = features[_col].fillna(_median_val)
+            logger.debug(f"Applied imputation medians to {len(_imputation_medians)} features")
+    except Exception as _e:
+        logger.warning(f"Could not load imputation medians (non-fatal): {_e}")
+
     # ── Generate Predictions ───────────────────────────────────────────
     all_predictions = []
 
@@ -688,7 +712,6 @@ def cmd_predict(args):
     # ── Save Predictions as JSON ─────────────────────────────────────
     if all_predictions:
         from config.settings import PREDICTIONS_DIR, get_latest_model_dir
-        import json
         # Use the actual game date (not run date) so accuracy tracker can match
         # predictions to results even when the pipeline runs late in the evening
         # and tomorrow's games are fetched instead of today's.
@@ -697,11 +720,14 @@ def cmd_predict(args):
             "date": pred_date,
             "model_version": str(get_latest_model_dir().name),
             "n_games": len(all_predictions),
+            "odds_available": not current_odds.empty,
             "games": all_predictions,
         }
         json_path = PREDICTIONS_DIR / f"{pred_date}.json"
-        with open(json_path, "w") as f:
-            json.dump(output, f, indent=2, cls=_NumpyEncoder)
+        tmp_path = json_path.with_suffix(".json.tmp")
+        with open(tmp_path, "w") as f:
+            _json.dump(output, f, indent=2, cls=_NumpyEncoder)
+        tmp_path.rename(json_path)
         logger.info(f"Predictions saved to {json_path}")
 
 

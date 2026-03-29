@@ -17,6 +17,7 @@ import os
 import threading
 import time
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import requests
 
@@ -25,6 +26,13 @@ logger = logging.getLogger(__name__)
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 POLL_TIMEOUT = 30  # long-poll seconds — reduces idle API calls
+
+_STATE_FILE: Path | None = None
+try:
+    from config.settings import DATA_DIR
+    _STATE_FILE = DATA_DIR / "bot_state.json"
+except Exception:
+    pass
 
 
 def _api(method: str, **kwargs) -> dict:
@@ -47,12 +55,26 @@ def _send(text: str, parse_mode: str = "Markdown") -> None:
 
 # ── State shared with the scheduler loop ────────────────────────────────────
 
-_state = {
-    "last_run": None,       # datetime of last scheduler run
-    "next_run": None,       # datetime of next scheduler run
-    "games_today": 0,
-    "edges_today": 0,
-}
+def _load_state_from_disk() -> dict:
+    """Load persisted bot state from disk (survives Railway container restarts)."""
+    if not _STATE_FILE or not _STATE_FILE.exists():
+        return {"last_run": None, "next_run": None, "games_today": 0, "edges_today": 0}
+    try:
+        with open(_STATE_FILE) as f:
+            raw = json.load(f)
+        # Deserialize ISO datetimes back to datetime objects
+        for key in ("last_run", "next_run"):
+            if raw.get(key):
+                try:
+                    raw[key] = datetime.fromisoformat(raw[key])
+                except Exception:
+                    raw[key] = None
+        return raw
+    except Exception:
+        return {"last_run": None, "next_run": None, "games_today": 0, "edges_today": 0}
+
+
+_state = _load_state_from_disk()
 _state_lock = threading.Lock()
 
 
@@ -94,6 +116,22 @@ def update_state(last_run: datetime, next_run: datetime, games: int, edges: int)
         _state["next_run"] = next_run
         _state["games_today"] = games
         _state["edges_today"] = edges
+
+    # Persist to disk so state survives container restarts
+    if _STATE_FILE:
+        try:
+            payload = {
+                "last_run": last_run.isoformat() if last_run else None,
+                "next_run": next_run.isoformat() if next_run else None,
+                "games_today": games,
+                "edges_today": edges,
+            }
+            tmp = _STATE_FILE.with_suffix(".json.tmp")
+            with open(tmp, "w") as f:
+                json.dump(payload, f)
+            tmp.rename(_STATE_FILE)
+        except Exception as e:
+            logger.debug(f"Could not persist bot state: {e}")
 
 
 def _get_state() -> dict:

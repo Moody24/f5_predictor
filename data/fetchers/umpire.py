@@ -155,7 +155,7 @@ class UmpireFetcher:
         # Full-history entries keyed by ump_id string (used at inference)
         for ump_id, agg in ump_agg.iterrows():
             n = int(agg["n_games"])
-            if n < 10:
+            if n < 11:  # match LOO threshold: need at least 10 prior games after LOO
                 continue
             full_avg = agg["total_runs"] / n
             tendencies[f"ump_{ump_id}"] = {
@@ -165,7 +165,7 @@ class UmpireFetcher:
 
         n_games = sum(1 for k in tendencies if isinstance(k, int))
         n_umps = sum(1 for k in tendencies if isinstance(k, str))
-        logger.info(f"Built tendencies for {n_umps} umpires (min 10 games), {n_games} LOO game entries")
+        logger.info(f"Built tendencies for {n_umps} umpires (min 11 games), {n_games} LOO game entries")
         return tendencies
 
     def get_umpire_features(
