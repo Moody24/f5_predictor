@@ -16,7 +16,7 @@ import logging
 import os
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import requests
 
@@ -56,6 +56,37 @@ _state = {
 _state_lock = threading.Lock()
 
 
+# ── /ask conversation history ────────────────────────────────────────────────
+# Keeps the last 6 messages (3 exchanges) so follow-up questions make sense.
+# Resets automatically if the user goes quiet for 30 minutes.
+
+_ask_history: list[dict] = []       # {"role": "user"|"assistant", "content": str}
+_ask_last_ts: datetime | None = None
+_ask_lock = threading.Lock()
+_ASK_MAX_TURNS = 6      # messages kept (3 user + 3 assistant)
+_ASK_IDLE_MINS = 30     # clear history after this many idle minutes
+
+
+def _get_ask_history() -> list[dict]:
+    """Return current history, clearing it if it has gone stale."""
+    with _ask_lock:
+        global _ask_history, _ask_last_ts
+        if _ask_last_ts and datetime.utcnow() - _ask_last_ts > timedelta(minutes=_ASK_IDLE_MINS):
+            _ask_history = []
+            _ask_last_ts = None
+        return list(_ask_history)
+
+
+def _append_ask_history(role: str, content: str) -> None:
+    with _ask_lock:
+        global _ask_history, _ask_last_ts
+        _ask_history.append({"role": role, "content": content})
+        # Keep only the most recent N messages
+        if len(_ask_history) > _ASK_MAX_TURNS:
+            _ask_history = _ask_history[-_ASK_MAX_TURNS:]
+        _ask_last_ts = datetime.utcnow()
+
+
 def update_state(last_run: datetime, next_run: datetime, games: int, edges: int) -> None:
     """Called by the scheduler after each run to keep bot state current."""
     with _state_lock:
@@ -75,6 +106,11 @@ def _get_state() -> dict:
 
 def _handle_predict() -> None:
     from notifications.telegram import send_daily_predictions
+    # Fresh predictions = fresh conversation context
+    with _ask_lock:
+        global _ask_history, _ask_last_ts
+        _ask_history = []
+        _ask_last_ts = None
     send_daily_predictions()
 
 
@@ -161,20 +197,31 @@ def _handle_ask(question: str) -> None:
             )
         context = f"Date: {preds.get('date')}\n" + "\n".join(summary_lines)
 
-    prompt = (
-        f"You are an MLB F5 betting analyst. Answer the user's question using today's predictions.\n\n"
-        f"Today's predictions:\n{context}\n\n"
-        f"User question: {question}\n\n"
-        f"Answer concisely in 2-4 sentences."
+    system_prompt = (
+        f"You are an MLB F5 betting analyst. Answer questions using today's predictions. "
+        f"Be consistent — if you named specific teams or picks earlier in this conversation, "
+        f"refer back to them rather than giving a different answer.\n\n"
+        f"Today's predictions:\n{context}"
     )
+
+    # Build messages: history + new question
+    history = _get_ask_history()
+    messages = history + [{"role": "user", "content": question}]
 
     client = anthropic.Anthropic(api_key=anthropic_key)
     msg = client.messages.create(
         model="claude-haiku-4-5-20251001",
         max_tokens=300,
-        messages=[{"role": "user", "content": prompt}],
+        system=system_prompt,
+        messages=messages,
     )
-    _send(msg.content[0].text)
+    reply = msg.content[0].text
+
+    # Save this exchange to history
+    _append_ask_history("user", question)
+    _append_ask_history("assistant", reply)
+
+    _send(reply)
 
 
 def _handle_help() -> None:
