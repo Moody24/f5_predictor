@@ -29,6 +29,7 @@ VENUE_COORDS = {
     "Chase Field": (33.4455, -112.0667, "America/Phoenix"),
     "Truist Park": (33.8907, -84.4677, "America/New_York"),
     "Oriole Park": (39.2839, -76.6217, "America/New_York"),
+    "Oriole Park at Camden Yards": (39.2839, -76.6217, "America/New_York"),
     "Fenway Park": (42.3467, -71.0972, "America/New_York"),
     "Wrigley Field": (41.9484, -87.6553, "America/Chicago"),
     "Guaranteed Rate Field": (41.8299, -87.6338, "America/Chicago"),
@@ -37,10 +38,13 @@ VENUE_COORDS = {
     "Coors Field": (39.7561, -104.9942, "America/Denver"),
     "Comerica Park": (42.3390, -83.0485, "America/New_York"),
     "Minute Maid Park": (29.7572, -95.3555, "America/Chicago"),
+    "Daikin Park": (29.7572, -95.3555, "America/Chicago"),            # Minute Maid Park renamed
     "Kauffman Stadium": (39.0517, -94.4803, "America/Chicago"),
     "Angel Stadium": (33.8003, -117.8827, "America/Los_Angeles"),
     "Dodger Stadium": (34.0739, -118.2400, "America/Los_Angeles"),
+    "UNIQLO Field at Dodger Stadium": (34.0739, -118.2400, "America/Los_Angeles"),  # Dodger Stadium renamed
     "loanDepot Park": (25.7781, -80.2196, "America/New_York"),
+    "loanDepot park": (25.7781, -80.2196, "America/New_York"),        # MLB API lowercase variant
     "American Family Field": (43.0280, -87.9712, "America/Chicago"),
     "Target Field": (44.9817, -93.2776, "America/Chicago"),
     "Citi Field": (40.7571, -73.8458, "America/New_York"),
@@ -64,8 +68,10 @@ DOME_STADIUMS = {
     "Globe Life Field",      # retractable
     "Rogers Centre",         # retractable
     "loanDepot Park",        # retractable
+    "loanDepot park",        # MLB API lowercase variant
     "Chase Field",           # retractable
     "Minute Maid Park",      # retractable
+    "Daikin Park",           # retractable (Minute Maid Park renamed)
     "T-Mobile Park",         # retractable
     "American Family Field", # retractable
 }
