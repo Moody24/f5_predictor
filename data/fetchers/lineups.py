@@ -109,7 +109,8 @@ class LineupFetcher:
             resp.raise_for_status()
             time.sleep(0.1)  # lighter rate-limit than pitcher fetches
             data = resp.json()
-            splits = data.get("stats", [{}])[0].get("splits", [])
+            stats_list = data.get("stats", [])
+            splits = stats_list[0].get("splits", []) if stats_list else []
             if splits:
                 woba = self._compute_woba(splits[0].get("stat", {}))
             else:

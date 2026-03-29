@@ -148,7 +148,8 @@ class MLBStatsFetcher:
             f"people/{player_id}/stats",
             {"stats": "season", "season": season, "group": "pitching"},
         )
-        splits = data.get("stats", [{}])[0].get("splits", [])
+        stats_list = data.get("stats", [])
+        splits = stats_list[0].get("splits", []) if stats_list else []
         if not splits:
             return {}
         return splits[0].get("stat", {})
@@ -161,7 +162,8 @@ class MLBStatsFetcher:
             f"people/{player_id}/stats",
             {"stats": "gameLog", "season": season, "group": "pitching"},
         )
-        splits = data.get("stats", [{}])[0].get("splits", [])
+        stats_list = data.get("stats", [])
+        splits = stats_list[0].get("splits", []) if stats_list else []
         rows = []
         for split in splits:
             stat = split.get("stat", {})
