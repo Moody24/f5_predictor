@@ -224,11 +224,106 @@ def _handle_ask(question: str) -> None:
     _send(reply)
 
 
+def _handle_record() -> None:
+    """Show running W-L record, ROI, and per-confidence breakdown."""
+    import json
+    from config.settings import DATA_DIR
+    log_path = DATA_DIR / "accuracy" / "daily_accuracy.json"
+
+    if not log_path.exists():
+        _send("No accuracy data yet — check back after the first scheduler run completes.")
+        return
+
+    with open(log_path) as f:
+        log = json.load(f)
+
+    if not log:
+        _send("Accuracy log is empty.")
+        return
+
+    # Aggregate across all tracked days
+    total_ml_correct = 0
+    total_ml_games = 0
+    total_edge_wins = 0
+    total_edge_bets = 0
+    total_roi = 0.0
+    conf_stats = {"STRONG": [0, 0, 0.0], "MODERATE": [0, 0, 0.0], "LEAN": [0, 0, 0.0]}
+    # [wins, total, roi]
+
+    for entry in log:
+        games = entry.get("games_tracked", 0)
+        ml_acc = entry.get("ml_accuracy", 0)
+        total_ml_correct += round(ml_acc / 100 * games)
+        total_ml_games += games
+
+        edges_flagged = entry.get("edges_flagged", 0)
+        edge_acc = entry.get("edge_bet_accuracy")
+        if edge_acc is not None and edges_flagged:
+            wins = round(edge_acc / 100 * edges_flagged)
+            total_edge_wins += wins
+            total_edge_bets += edges_flagged
+
+        total_roi += entry.get("edge_roi", 0.0)
+
+        for conf in ("STRONG", "MODERATE", "LEAN"):
+            key = conf.lower()
+            w = entry.get(f"{key}_wins", 0)
+            t = entry.get(f"{key}_total", 0)
+            r = entry.get(f"{key}_roi", 0.0)
+            conf_stats[conf][0] += w
+            conf_stats[conf][1] += t
+            conf_stats[conf][2] += r
+
+    days = len(log)
+    last_entry = log[-1]
+
+    lines = [
+        f"*F5 Predictor — Record ({days} day{'s' if days != 1 else ''} tracked)*",
+        "",
+        f"*ML Win Rate:* {total_ml_correct}W-{total_ml_games - total_ml_correct}L "
+        f"({round(total_ml_correct/max(total_ml_games,1)*100,1)}%)",
+        "",
+        "*Edge Bets by Confidence:*",
+    ]
+
+    for conf in ("STRONG", "MODERATE", "LEAN"):
+        w, t, roi = conf_stats[conf]
+        if t == 0:
+            lines.append(f"  {conf}: no bets yet")
+        else:
+            pct = round(w / t * 100, 1)
+            roi_str = f"+{roi:.2f}u" if roi >= 0 else f"{roi:.2f}u"
+            lines.append(f"  {conf}: {w}W-{t-w}L ({pct}%) | ROI: {roi_str}")
+
+    if total_edge_bets:
+        overall_pct = round(total_edge_wins / total_edge_bets * 100, 1)
+        roi_str = f"+{total_roi:.2f}u" if total_roi >= 0 else f"{total_roi:.2f}u"
+        lines += [
+            "",
+            f"*All Edges:* {total_edge_wins}W-{total_edge_bets - total_edge_wins}L "
+            f"({overall_pct}%) | Total ROI: {roi_str}",
+        ]
+
+    # Yesterday's snapshot
+    lines += [
+        "",
+        f"*Yesterday ({last_entry.get('date', '?')}):* "
+        f"ML {last_entry.get('ml_accuracy', '?')}% | "
+        f"Avg total error: {last_entry.get('avg_total_error', '?')} runs",
+    ]
+
+    if last_entry.get("avg_clv") is not None:
+        lines.append(f"  CLV: {last_entry['avg_clv']:+.2f}% ({last_entry.get('positive_clv_pct','?')}% positive)")
+
+    _send("\n".join(lines))
+
+
 def _handle_help() -> None:
     _send(
         "*F5 Predictor Bot*\n\n"
         "/predict — full today's predictions\n"
         "/edges — edge bets only\n"
+        "/record — W-L record, ROI, and accuracy by confidence\n"
         "/status — last/next run times\n"
         "/ask <question> — ask Claude about today's games\n"
         "/help — show this message"
@@ -275,6 +370,8 @@ def _poll_loop() -> None:
                     _handle_edges()
                 elif command == "/status":
                     _handle_status()
+                elif command == "/record":
+                    _handle_record()
                 elif command == "/ask":
                     if arg:
                         _handle_ask(arg)

@@ -144,6 +144,8 @@ def check_yesterday_accuracy(mlb_fetcher, odds_fetcher=None) -> dict:
             "pred_home_prob": ml["home_prob"],
             "pred_home_win": pred_home_win,
             "actual_home_win": actual_home_win,
+            "actual_home_runs": int(actual_home_runs),
+            "actual_away_runs": int(actual_away_runs),
             "ml_correct": pred_home_win == actual_home_win,
             "pred_total": pred_game.get("total", {}).get("predicted", 0),
             "actual_total": actual_total,
@@ -177,21 +179,62 @@ def check_yesterday_accuracy(mlb_fetcher, odds_fetcher=None) -> dict:
             f"positive={summary['positive_clv_pct']}% of {len(clv_vals)} games"
         )
 
-    # Track edge bet results
+    # Track edge bet results with per-confidence breakdown and ROI
     edge_results = []
     for r in results:
         for edge in r.get("edges", []):
             market = edge.get("market", "")
+            side = edge.get("side", "")
+            confidence = edge.get("confidence", "LEAN")
+            market_prob = edge.get("market_prob", 0.5)
+
             if "Moneyline" in market:
-                side = edge["side"]
                 won = (side == "Home" and r["actual_home_win"] == 1) or \
                       (side == "Away" and r["actual_home_win"] == 0)
-                edge_results.append({"won": won, "edge_pct": edge["edge_pct"]})
+            elif "Run Line" in market:
+                # Home -1 covers if home wins by 2+; Away +1 covers if away wins or ties
+                run_diff = r.get("actual_home_runs", 0) - r.get("actual_away_runs", 0)
+                if side == "Home":
+                    won = run_diff >= 2
+                else:
+                    won = run_diff <= 1
+            elif "Over" in market or "Under" in market:
+                actual_total = r["actual_total"]
+                total_line = edge.get("total_line", actual_total)
+                if side == "Over":
+                    won = actual_total > total_line
+                else:
+                    won = actual_total < total_line
+            else:
+                continue
+
+            # Profit in units: +payout if won, -1 if lost (flat 1 unit bet)
+            payout = (1 / max(market_prob, 0.01)) - 1
+            profit = round(payout if won else -1.0, 3)
+
+            edge_results.append({
+                "won": won,
+                "profit": profit,
+                "edge_pct": edge.get("edge_pct", 0),
+                "confidence": confidence,
+                "market": market,
+                "side": side,
+            })
 
     if edge_results:
         edge_df = pd.DataFrame(edge_results)
         summary["edge_bet_accuracy"] = round(edge_df["won"].mean() * 100, 1)
         summary["avg_edge_on_bets"] = round(edge_df["edge_pct"].mean(), 1)
+        summary["edge_roi"] = round(edge_df["profit"].sum(), 3)
+        summary["edge_bets_detail"] = edge_results  # full per-edge log
+
+        # Per-confidence breakdown
+        for conf in ("STRONG", "MODERATE", "LEAN"):
+            sub = edge_df[edge_df["confidence"] == conf]
+            if not sub.empty:
+                summary[f"{conf.lower()}_wins"] = int(sub["won"].sum())
+                summary[f"{conf.lower()}_total"] = int(len(sub))
+                summary[f"{conf.lower()}_roi"] = round(sub["profit"].sum(), 3)
 
     # Append to running log
     log_path = ACCURACY_DIR / "daily_accuracy.json"
