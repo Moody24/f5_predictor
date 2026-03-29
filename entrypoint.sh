@@ -33,8 +33,9 @@ if [ "$STORED_VERSION" != "$PIPELINE_VERSION" ] && [ -f "$FEATURE_MATRIX" ]; the
     rm -f "$FEATURE_MATRIX"
 fi
 
-# Validate feature matrix by file size (>1MB = valid).
-# Avoids pyarrow/column-name issues that silently return 0 rows.
+# Validate feature matrix by file size (>500KB = valid).
+# 12k+ games with snappy compression typically lands 600KB-900KB, so 500KB
+# is a safe floor that still catches empty/corrupt files without false positives.
 MATRIX_SIZE=0
 if [ -f "$FEATURE_MATRIX" ]; then
     MATRIX_SIZE=$(stat -c%s "$FEATURE_MATRIX" 2>/dev/null || stat -f%z "$FEATURE_MATRIX" 2>/dev/null || echo 0)
@@ -46,7 +47,7 @@ REBUILD_REASON=""
 if [ ! -f "$FEATURE_MATRIX" ] || [ -z "$(ls -A $MODEL_DIR 2>/dev/null)" ]; then
     NEED_REBUILD=true
     REBUILD_REASON="No data/models found"
-elif [ "$MATRIX_SIZE" -lt 1048576 ]; then
+elif [ "$MATRIX_SIZE" -lt 512000 ]; then
     NEED_REBUILD=true
     REBUILD_REASON="Feature matrix too small (${MATRIX_SIZE} bytes — likely corrupt)"
     rm -f "$FEATURE_MATRIX"
