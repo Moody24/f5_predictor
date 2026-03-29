@@ -533,8 +533,52 @@ def cmd_predict(args):
                 except Exception as e:
                     logger.warning(f"Failed to fetch team stats for ID {tid}: {e}")
 
+    # ── Lineup + Recent Batter Form ────────────────────────────────────
+    # Fetch today's confirmed lineups and each starter's 14-day rolling wOBA.
+    # Cached per player per day so the second daily run is instant.
+    # Fails gracefully: falls back to league-average defaults if API is down.
+    lineup_features_today = pd.DataFrame()
+    try:
+        from data.fetchers.lineups import LineupFetcher
+        lf = LineupFetcher()
+        batter_stats_df = lf.get_batter_season_stats(CURRENT_SEASON)
+        if batter_stats_df.empty:
+            batter_stats_df = lf.get_batter_season_stats(CURRENT_SEASON - 1)
+
+        lineup_rows = []
+        for _, game in upcoming.iterrows():
+            gpk = int(game["game_pk"])
+            # For today's pre-game, try probable lineup from boxscore (won't exist yet),
+            # fall back to empty — build_lineup_features uses league-average defaults.
+            lineup = lf.get_game_lineup(gpk)
+
+            # Collect all batter IDs in this game to batch recent-form fetches
+            all_batters = lineup.get("away", []) + lineup.get("home", [])
+            recent_form = {}
+            for batter in all_batters:
+                pid = batter.get("player_id")
+                if pid:
+                    recent_form[pid] = lf.get_batter_recent_form(pid, CURRENT_SEASON)
+
+            feats = lf.build_lineup_features(
+                gpk, lineup, batter_stats_df,
+                recent_form=recent_form,
+            )
+            feats["game_pk"] = gpk
+            lineup_rows.append(feats)
+
+        if lineup_rows:
+            lineup_features_today = pd.DataFrame(lineup_rows)
+            logger.info(
+                f"Lineup features built for {len(lineup_rows)} games "
+                f"(recent form: {sum(1 for r in lineup_rows if r.get('away_lineup_recent_woba', 0.320) != 0.320)} games with live data)"
+            )
+    except Exception as e:
+        logger.warning(f"Lineup fetch failed (non-fatal): {e} — using league-average defaults")
+
     today_base = fe.build_game_features(
-        upcoming, pitcher_stats, statcast_profiles, team_stats
+        upcoming, pitcher_stats, statcast_profiles, team_stats,
+        lineup_features=lineup_features_today if not lineup_features_today.empty else None,
     )
 
     # Rolling and travel features require historical context.

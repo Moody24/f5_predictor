@@ -76,6 +76,8 @@ class FeatureEngineer:
 
     LINEUP_FEATURES = [
         "lineup_avg_woba", "lineup_avg_ops", "lineup_total_iso", "lineup_platoon_pct",
+        "lineup_recent_woba",   # 14-day rolling wOBA (hot/cold form)
+        "lineup_hot_pct",       # % of starters with recent wOBA > season by 0.020+
     ]
 
     ROLLING_FEATURES = [
@@ -236,6 +238,8 @@ class FeatureEngineer:
                 row[f"{side}_lineup_avg_ops"] = lineup.get(f"{side}_lineup_avg_ops", 0.720)
                 row[f"{side}_lineup_total_iso"] = lineup.get(f"{side}_lineup_total_iso", 1.350)
                 row[f"{side}_lineup_platoon_pct"] = lineup.get(f"{side}_lineup_platoon_pct", 50.0)
+                row[f"{side}_lineup_recent_woba"] = lineup.get(f"{side}_lineup_recent_woba", 0.320)
+                row[f"{side}_lineup_hot_pct"] = lineup.get(f"{side}_lineup_hot_pct", 50.0)
 
             # ── Combine ────────────────────────────────────────────────
             row.update(away_pitcher)

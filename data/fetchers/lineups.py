@@ -2,17 +2,20 @@
 Lineup Data Fetcher
 --------------------
 Fetches confirmed lineups and individual batter stats to compute
-lineup-level features (avg wOBA, platoon advantage, etc.).
+lineup-level features (avg wOBA, platoon advantage, recent form).
 
 Data sources:
   - MLB Stats API boxscore endpoint (historical lineups)
+  - MLB Stats API dateRange stats (per-batter recent 14-day form)
   - pybaseball batting_stats() (season-level batter stats, bulk)
 """
+import json
 import re
 import requests
 import pandas as pd
 import numpy as np
 from typing import Optional
+from datetime import datetime, timedelta
 import logging
 import time
 
@@ -45,7 +48,84 @@ class LineupFetcher:
         self.session = requests.Session()
         self.cache_dir = DATA_DIR / "lineups"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self._recent_form_dir = self.cache_dir / "recent_form"
+        self._recent_form_dir.mkdir(parents=True, exist_ok=True)
         self._batter_cache = {}  # {season: DataFrame}
+
+    # ── Recent Form (14-day rolling) ───────────────────────────────────
+
+    @staticmethod
+    def _compute_woba(stats: dict) -> Optional[float]:
+        """
+        Compute wOBA from raw counting stats using standard FanGraphs weights.
+        Returns None if insufficient plate appearances.
+        """
+        pa = int(stats.get("plateAppearances", 0) or 0)
+        if pa < 5:
+            return None
+        h   = int(stats.get("hits", 0) or 0)
+        d   = int(stats.get("doubles", 0) or 0)
+        t   = int(stats.get("triples", 0) or 0)
+        hr  = int(stats.get("homeRuns", 0) or 0)
+        bb  = int(stats.get("baseOnBalls", 0) or 0)
+        hbp = int(stats.get("hitByPitch", 0) or 0)
+        s   = h - d - t - hr  # singles
+        # Standard wOBA weights (2023 FanGraphs)
+        num = 0.69*bb + 0.72*hbp + 0.88*s + 1.24*d + 1.56*t + 2.08*hr
+        return round(num / pa, 3)
+
+    def get_batter_recent_form(
+        self, player_id: int, season: int, days: int = 14
+    ) -> Optional[float]:
+        """
+        Return a batter's wOBA over the last `days` days using the MLB Stats API.
+        Results are cached by (player_id, today's date) so they auto-refresh daily
+        but don't re-fetch within the same day.
+
+        Returns wOBA float or None if insufficient data.
+        """
+        today = datetime.utcnow().strftime("%Y-%m-%d")
+        cache_file = self._recent_form_dir / f"{player_id}_{today}.json"
+
+        # Check today's cache first
+        if cache_file.exists():
+            try:
+                with open(cache_file) as f:
+                    return json.load(f).get("woba")
+            except Exception:
+                pass
+
+        # Fetch from MLB Stats API: dateRange stats for last N days
+        start = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%d")
+        try:
+            url = f"{MLB_STATS_BASE}/people/{player_id}/stats"
+            resp = self.session.get(url, params={
+                "stats": "dateRange",
+                "startDate": start,
+                "endDate": today,
+                "group": "hitting",
+                "season": season,
+            }, timeout=20)
+            resp.raise_for_status()
+            time.sleep(0.1)  # lighter rate-limit than pitcher fetches
+            data = resp.json()
+            splits = data.get("stats", [{}])[0].get("splits", [])
+            if splits:
+                woba = self._compute_woba(splits[0].get("stat", {}))
+            else:
+                woba = None
+        except Exception as e:
+            logger.debug(f"Recent form fetch failed for player {player_id}: {e}")
+            woba = None
+
+        # Cache result (including None = no data, to avoid re-fetching)
+        try:
+            with open(cache_file, "w") as f:
+                json.dump({"woba": woba, "date": today}, f)
+        except Exception:
+            pass
+
+        return woba
 
     def _get(self, endpoint: str, params: dict = None) -> dict:
         url = f"{MLB_STATS_BASE}/{endpoint}"
@@ -120,6 +200,7 @@ class LineupFetcher:
     def build_lineup_features(
         self, game_pk: int, lineup: dict, batter_stats_df: pd.DataFrame,
         opposing_pitcher_hand: str = "R",
+        recent_form: dict = None,
     ) -> dict:
         """
         Compute lineup-level features from individual batter stats.
@@ -129,6 +210,8 @@ class LineupFetcher:
             lineup: {"away": [...], "home": [...]} from get_game_lineup
             batter_stats_df: Season batter stats DataFrame
             opposing_pitcher_hand: "R" or "L"
+            recent_form: Optional {player_id: woba_float} for last-14-day form.
+                         When provided, adds lineup_recent_woba and lineup_hot_pct.
 
         Returns:
             Dict with away_ and home_ prefixed lineup features
@@ -140,15 +223,18 @@ class LineupFetcher:
                 features.update(self._default_lineup_features(side))
                 continue
 
-            # Match batters to their stats
+            # Match batters to their season stats
             woba_vals = []
             ops_vals = []
             iso_vals = []
             platoon_advantage_count = 0
+            recent_woba_vals = []
+            hot_count = 0
 
             for batter in batters[:9]:  # top 9 in order
                 bat_side = batter.get("bat_side", "R")
                 name = batter.get("name", "")
+                pid = batter.get("player_id")
 
                 # Try to match by last name, skipping generational suffixes
                 last = _last_meaningful_token(name)
@@ -162,26 +248,44 @@ class LineupFetcher:
                     exact = match[match["Name"].str.lower() == name.lower()]
                     if not exact.empty:
                         match = exact
+
+                season_woba = 0.320
                 if match.empty:
-                    woba_vals.append(0.320)
                     ops_vals.append(0.720)
                     iso_vals.append(0.150)
                 else:
                     row = match.iloc[0]
-                    woba_vals.append(float(row.get("wOBA", 0.320)))
+                    season_woba = float(row.get("wOBA", 0.320))
                     ops_vals.append(float(row.get("OPS", 0.720)))
                     iso_vals.append(float(row.get("ISO", 0.150)))
+                woba_vals.append(season_woba)
 
                 # Platoon advantage: L batter vs R pitcher or R vs L
                 if (bat_side == "L" and opposing_pitcher_hand == "R") or \
                    (bat_side == "R" and opposing_pitcher_hand == "L"):
                     platoon_advantage_count += 1
 
-            n = max(len(woba_vals), 1)
+                # Recent form: compare 14-day wOBA to season wOBA
+                if recent_form and pid and pid in recent_form:
+                    r_woba = recent_form[pid]
+                    if r_woba is not None:
+                        recent_woba_vals.append(r_woba)
+                        # "Hot" = recent wOBA meaningfully above season baseline
+                        if r_woba - season_woba >= 0.020:
+                            hot_count += 1
+
             features[f"{side}_lineup_avg_woba"] = round(np.mean(woba_vals), 3)
             features[f"{side}_lineup_avg_ops"] = round(np.mean(ops_vals), 3)
             features[f"{side}_lineup_total_iso"] = round(sum(iso_vals), 3)
             features[f"{side}_lineup_platoon_pct"] = round(platoon_advantage_count / 9 * 100, 1)
+
+            # Recent form features — fall back to season average if no data
+            if recent_woba_vals:
+                features[f"{side}_lineup_recent_woba"] = round(np.mean(recent_woba_vals), 3)
+                features[f"{side}_lineup_hot_pct"] = round(hot_count / 9 * 100, 1)
+            else:
+                features[f"{side}_lineup_recent_woba"] = features[f"{side}_lineup_avg_woba"]
+                features[f"{side}_lineup_hot_pct"] = 50.0  # neutral default
 
         return features
 
@@ -193,6 +297,8 @@ class LineupFetcher:
             f"{side}_lineup_avg_ops": 0.720,
             f"{side}_lineup_total_iso": 1.350,  # ~0.150 * 9
             f"{side}_lineup_platoon_pct": 50.0,
+            f"{side}_lineup_recent_woba": 0.320,
+            f"{side}_lineup_hot_pct": 50.0,
         }
 
     def build_batch_lineup_features(
