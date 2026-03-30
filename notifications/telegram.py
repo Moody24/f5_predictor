@@ -79,6 +79,7 @@ def send_daily_predictions():
 
     if not pred_path.exists():
         logger.info("No predictions to send")
+        send_telegram("No predictions available for today yet. The scheduler may not have run yet.")
         return
 
     accuracy_context = _load_yesterday_accuracy()

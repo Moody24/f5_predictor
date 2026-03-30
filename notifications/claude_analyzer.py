@@ -112,13 +112,16 @@ Provide:
 
 Keep it under 450 words. Be direct and specific — this goes straight to a bettor's phone."""
 
-    message = client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=600,
-        messages=[{"role": "user", "content": prompt}],
-    )
-
-    return message.content[0].text
+    try:
+        message = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=600,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return message.content[0].text
+    except Exception as e:
+        logger.warning(f"Claude API call failed, using fallback summary: {e}")
+        return _fallback_summary(predictions_json, accuracy_context)
 
 
 def analyze_today(accuracy_context: dict = None) -> str:
