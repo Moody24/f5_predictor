@@ -52,13 +52,18 @@ def main():
         next_run_dt = datetime.now(timezone.utc) + timedelta(seconds=sleep_secs)
         logger.info(f"Next scheduler run at {next_run_dt.strftime('%Y-%m-%d %H:%M UTC')} ({sleep_secs/3600:.1f}h away)")
 
-        # Update bot state with next run time before sleeping
+        # Update only next_run before sleeping — preserve last_run/games/edges
+        # from the most recent actual scheduler run (loaded from disk on startup).
+        # Overwriting with "now" and zeros here caused /status to show wrong data
+        # after every container restart.
         try:
+            from notifications.telegram_bot import _get_state
+            current = _get_state()
             update_state(
-                last_run=datetime.now(timezone.utc),
+                last_run=current.get("last_run"),
                 next_run=next_run_dt.replace(tzinfo=None),
-                games=0,
-                edges=0,
+                games=current.get("games_today", 0),
+                edges=current.get("edges_today", 0),
             )
         except Exception:
             pass

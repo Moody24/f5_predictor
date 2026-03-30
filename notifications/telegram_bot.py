@@ -149,7 +149,11 @@ def _handle_predict() -> None:
         global _ask_history, _ask_last_ts
         _ask_history = []
         _ask_last_ts = None
-    send_daily_predictions()
+    try:
+        send_daily_predictions()
+    except Exception as e:
+        logger.error(f"Predict handler failed: {e}")
+        _send(f"Failed to generate predictions: {e}")
 
 
 def _handle_edges() -> None:
@@ -305,6 +309,14 @@ def _handle_ask(question: str) -> None:
 
 def _handle_record() -> None:
     """Show running W-L record, ROI, and per-confidence breakdown."""
+    try:
+        _handle_record_inner()
+    except Exception as e:
+        logger.error(f"Record handler failed: {e}")
+        _send(f"Failed to load record: {e}")
+
+
+def _handle_record_inner() -> None:
     import json
     from config.settings import DATA_DIR
     log_path = DATA_DIR / "accuracy" / "daily_accuracy.json"
